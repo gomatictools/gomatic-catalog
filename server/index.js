@@ -13,6 +13,7 @@ fs.mkdirSync(uploadDir, { recursive: true })
 
 const sqlite = sqlite3.verbose()
 const db = new sqlite.Database(dbFile)
+db.run('PRAGMA foreign_keys = ON')
 
 const runAsync = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -82,12 +83,27 @@ await runAsync(`
   CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key TEXT UNIQUE,
+    parent_key TEXT DEFAULT NULL,
     name_mk TEXT DEFAULT '',
     name_sr TEXT DEFAULT '',
     name_sq TEXT DEFAULT '',
     name_en TEXT DEFAULT ''
   );
 `)
+
+// Migration: add parent_key column if it doesn't exist yet
+try {
+  await runAsync('ALTER TABLE categories ADD COLUMN parent_key TEXT DEFAULT NULL')
+} catch {
+  // column already exists — safe to ignore
+}
+
+// Migration: add sort_order column for drag-and-drop reordering
+try {
+  await runAsync('ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0')
+} catch {
+  // column already exists — safe to ignore
+}
 
 const catCount = await getAsync('SELECT COUNT(*) as count FROM categories')
 if (catCount.count === 0) {
@@ -97,7 +113,7 @@ if (catCount.count === 0) {
     { key: 'accessories', mk: 'Аксесоари', sr: 'Aksesoari', sq: 'Aksesorë', en: 'Accessories' },
   ]
   for (const c of defaults) {
-    await runAsync('INSERT OR IGNORE INTO categories (key, name_mk, name_sr, name_sq, name_en) VALUES (?, ?, ?, ?, ?)',
+    await runAsync('INSERT OR IGNORE INTO categories (key, parent_key, name_mk, name_sr, name_sq, name_en) VALUES (?, NULL, ?, ?, ?, ?)',
       [c.key, c.mk, c.sr, c.sq, c.en])
   }
 }
@@ -108,6 +124,37 @@ app.use(express.json({ limit: '10mb' }))
 app.use('/uploads', express.static(uploadDir))
 
 const supportedLangs = ['mk', 'sr', 'sq', 'en']
+
+// Returns the depth of a category (0 = root, 1 = subcategory, 2 = sub-subcategory)
+const getCategoryDepth = async (key, seen = new Set()) => {
+  if (!key || seen.has(key)) return 0
+  seen.add(key)
+  const row = await getAsync('SELECT parent_key FROM categories WHERE key = ?', [key])
+  if (!row || !row.parent_key) return 0
+  return 1 + await getCategoryDepth(row.parent_key, seen)
+}
+
+// Returns the max height of the subtree rooted at key (0 = leaf)
+const getSubtreeHeight = async (key) => {
+  const children = await allAsync('SELECT key FROM categories WHERE parent_key = ?', [key])
+  if (children.length === 0) return 0
+  const heights = await Promise.all(children.map(c => getSubtreeHeight(c.key)))
+  return 1 + Math.max(...heights)
+}
+
+// Returns all descendant keys of a category
+const getAllDescendantKeys = async (key) => {
+  const keys = new Set()
+  const add = async (k) => {
+    const children = await allAsync('SELECT key FROM categories WHERE parent_key = ?', [k])
+    for (const c of children) {
+      keys.add(c.key)
+      await add(c.key)
+    }
+  }
+  await add(key)
+  return keys
+}
 
 const buildProduct = async (productRow) => {
   const translations = await allAsync('SELECT lang, name, description FROM product_translations WHERE product_id = ?', [productRow.id])
@@ -156,10 +203,16 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
+// ── Categories ────────────────────────────────────────────────────────────────
+
 app.get('/api/categories', async (_req, res) => {
   try {
-    const rows = await allAsync('SELECT key, name_mk, name_sr, name_sq, name_en FROM categories ORDER BY id ASC')
-    res.json(rows.map(r => ({ key: r.key, name: { mk: r.name_mk, sr: r.name_sr, sq: r.name_sq, en: r.name_en } })))
+    const rows = await allAsync('SELECT key, parent_key, name_mk, name_sr, name_sq, name_en FROM categories ORDER BY sort_order ASC, id ASC')
+    res.json(rows.map(r => ({
+      key: r.key,
+      parent_key: r.parent_key || null,
+      name: { mk: r.name_mk, sr: r.name_sr, sq: r.name_sq, en: r.name_en },
+    })))
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -167,26 +220,66 @@ app.get('/api/categories', async (_req, res) => {
 
 app.post('/api/categories', async (req, res) => {
   try {
-    const { key, name } = req.body
-    if (!key || !name?.mk) return res.status(400).json({ error: 'Missing required fields (key, name.mk)' })
-    await runAsync('INSERT INTO categories (key, name_mk, name_sr, name_sq, name_en) VALUES (?, ?, ?, ?, ?)',
-      [key, name.mk || '', name.sr || '', name.sq || '', name.en || ''])
-    res.status(201).json({ key, name })
+    const { key, name, parent_key } = req.body
+    if (!key || !name?.mk) return res.status(400).json({ error: 'key и name.mk се задолжителни' })
+
+    if (parent_key) {
+      const parentDepth = await getCategoryDepth(parent_key)
+      if (parentDepth >= 2) {
+        return res.status(400).json({ error: 'Максимална длабочина е 2 нивоа под главната категорија.' })
+      }
+    }
+
+    await runAsync(
+      'INSERT INTO categories (key, parent_key, name_mk, name_sr, name_sq, name_en) VALUES (?, ?, ?, ?, ?, ?)',
+      [key, parent_key || null, name.mk || '', name.sr || '', name.sq || '', name.en || ''],
+    )
+    res.status(201).json({ key, parent_key: parent_key || null, name })
   } catch (err) {
     res.status(400).json({ error: err.message })
+  }
+})
+
+app.put('/api/categories/reorder', async (req, res) => {
+  try {
+    const updates = req.body
+    if (!Array.isArray(updates)) return res.status(400).json({ error: 'Expected array' })
+    for (const { key, sort_order } of updates) {
+      await runAsync('UPDATE categories SET sort_order = ? WHERE key = ?', [sort_order, key])
+    }
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
   }
 })
 
 app.put('/api/categories/:key', async (req, res) => {
   try {
     const { key } = req.params
-    const { name } = req.body
+    const { name, parent_key } = req.body
     if (!name?.mk) return res.status(400).json({ error: 'name.mk е задолжително' })
+
+    const newParent = parent_key || null
+
+    if (newParent) {
+      // Prevent cycles
+      const descendants = await getAllDescendantKeys(key)
+      if (descendants.has(newParent) || newParent === key) {
+        return res.status(400).json({ error: 'Не може да се постави потомок или самиот себе за родителска категорија.' })
+      }
+      // Check depth constraint: newParentDepth + 1 + subtreeHeight <= 2
+      const newParentDepth = await getCategoryDepth(newParent)
+      const subtreeHeight = await getSubtreeHeight(key)
+      if (newParentDepth + 1 + subtreeHeight > 2) {
+        return res.status(400).json({ error: 'Ова би го надминало максималното ниво на вгнезденост (2 нивоа).' })
+      }
+    }
+
     await runAsync(
-      'UPDATE categories SET name_mk=?, name_sr=?, name_sq=?, name_en=? WHERE key=?',
-      [name.mk || '', name.sr || '', name.sq || '', name.en || '', key],
+      'UPDATE categories SET parent_key=?, name_mk=?, name_sr=?, name_sq=?, name_en=? WHERE key=?',
+      [newParent, name.mk || '', name.sr || '', name.sq || '', name.en || '', key],
     )
-    res.json({ key, name })
+    res.json({ key, parent_key: newParent, name })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -197,7 +290,11 @@ app.delete('/api/categories/:key', async (req, res) => {
     const { key } = req.params
     const inUse = await getAsync('SELECT COUNT(*) as count FROM products WHERE category = ?', [key])
     if (inUse.count > 0) {
-      return res.status(409).json({ error: `Не може да се избрише категоријата — ${inUse.count} производ(и) ја користат.` })
+      return res.status(409).json({ error: `Не може да се избрише — ${inUse.count} производ(и) ја користат.` })
+    }
+    const hasChildren = await getAsync('SELECT COUNT(*) as count FROM categories WHERE parent_key = ?', [key])
+    if (hasChildren.count > 0) {
+      return res.status(409).json({ error: 'Не може да се избрише — категоријата има подкатегории.' })
     }
     await runAsync('DELETE FROM categories WHERE key = ?', [key])
     res.json({ success: true })
@@ -205,6 +302,8 @@ app.delete('/api/categories/:key', async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 })
+
+// ── Products ──────────────────────────────────────────────────────────────────
 
 app.get('/api/products', async (_req, res) => {
   try {
@@ -219,9 +318,7 @@ app.get('/api/products', async (_req, res) => {
 app.get('/api/products/:id', async (req, res) => {
   try {
     const row = await getAsync('SELECT * FROM products WHERE id = ?', [req.params.id])
-    if (!row) {
-      return res.status(404).json({ error: 'Product not found' })
-    }
+    if (!row) return res.status(404).json({ error: 'Product not found' })
     res.json(await buildProduct(row))
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -247,9 +344,7 @@ app.post('/api/products', async (req, res) => {
 
     await runAsync('INSERT OR REPLACE INTO inventory (product_id, quantity) VALUES (?, 0)', [productId])
 
-    if (imageData) {
-      saveImageFromData(productId, imageData)
-    }
+    if (imageData) saveImageFromData(productId, imageData)
 
     const created = await getAsync('SELECT * FROM products WHERE id = ?', [productId])
     res.status(201).json(await buildProduct(created))
@@ -261,13 +356,19 @@ app.post('/api/products', async (req, res) => {
 app.put('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const { category, price, name, description, imageData } = req.body
+    const { category, price, sku, name, description, imageData } = req.body
     const existing = await getAsync('SELECT * FROM products WHERE id = ?', [id])
     if (!existing) return res.status(404).json({ error: 'Product not found' })
 
+    const newSku = sku?.trim() || existing.sku
+    if (newSku !== existing.sku) {
+      const conflict = await getAsync('SELECT id FROM products WHERE sku = ? AND id != ?', [newSku, id])
+      if (conflict) return res.status(409).json({ error: `SKU "${newSku}" веќе постои.` })
+    }
+
     await runAsync(
-      'UPDATE products SET category=?, price=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
-      [category ?? existing.category, Number(price) ?? existing.price, id],
+      'UPDATE products SET sku=?, category=?, price=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+      [newSku, category ?? existing.category, Number(price) ?? existing.price, id],
     )
 
     if (name || description) {
@@ -303,6 +404,8 @@ app.delete('/api/products/:id', async (req, res) => {
   }
 })
 
+// ── Inventory ─────────────────────────────────────────────────────────────────
+
 app.get('/api/inventory', async (req, res) => {
   try {
     const { sku, product_id } = req.query
@@ -312,9 +415,7 @@ app.get('/api/inventory', async (req, res) => {
     } else if (product_id) {
       product = await getAsync('SELECT * FROM products WHERE id = ?', [product_id])
     }
-    if (!product) {
-      return res.status(404).json({ error: 'Product not found' })
-    }
+    if (!product) return res.status(404).json({ error: 'Product not found' })
     const inventory = await getAsync('SELECT quantity FROM inventory WHERE product_id = ?', [product.id])
     res.json({ product_id: product.id, sku: product.sku, quantity: inventory?.quantity ?? 0 })
   } catch (err) {
@@ -331,9 +432,7 @@ app.post('/api/inventory', async (req, res) => {
     } else if (sku) {
       product = await getAsync('SELECT * FROM products WHERE sku = ?', [sku])
     }
-    if (!product) {
-      return res.status(404).json({ error: 'Product not found' })
-    }
+    if (!product) return res.status(404).json({ error: 'Product not found' })
     await runAsync('INSERT OR REPLACE INTO inventory (product_id, quantity, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)', [product.id, Number(quantity) || 0])
     res.json({ product_id: product.id, sku: product.sku, quantity: Number(quantity) || 0 })
   } catch (err) {

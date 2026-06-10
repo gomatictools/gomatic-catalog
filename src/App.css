@@ -25,6 +25,37 @@
   max-width: 720px;
 }
 
+.admin-toggle {
+  padding: 10px 18px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.error-banner {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  background: #c0392b;
+  color: #fff;
+  padding: 14px 22px;
+  border-radius: 10px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  font-weight: 500;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  max-width: 90vw;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .language-select {
   display: grid;
   gap: 8px;
@@ -45,7 +76,7 @@
 
 .catalog-main {
   display: grid;
-  grid-template-columns: 1fr 1.5fr 0.9fr;
+  grid-template-columns: 180px 1fr 280px;
   gap: 24px;
 }
 
@@ -133,7 +164,7 @@
 
 .product-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
 
@@ -150,8 +181,11 @@
 .product-image img {
   width: 100%;
   height: 220px;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
+  background: #f8f8f8;
+  padding: 8px;
+  box-sizing: border-box;
 }
 
 .product-details {
@@ -570,5 +604,255 @@
 @media (max-width: 600px) {
   .category-add-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Category add-form heading */
+.category-add-form h4 {
+  margin: 0 0 10px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+/* ── Sidebar category tree ── */
+.sidebar-tree-node {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-tree-node button {
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+}
+
+.sidebar-tree-node button.active,
+.sidebar-tree-node button:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+.sidebar-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border);
+  margin-left: 12px;
+}
+
+/* Depth visual cues on sidebar */
+.sidebar-tree-node.depth-1 > button { font-size: 0.93rem; }
+.sidebar-tree-node.depth-2 > button { font-size: 0.87rem; opacity: 0.85; }
+
+/* ── Category pills depth styles ── */
+.category-buttons button.cat-depth-1 {
+  font-size: 0.88rem;
+  padding: 8px 13px;
+  opacity: 0.9;
+}
+
+.category-buttons button.cat-depth-2 {
+  font-size: 0.82rem;
+  padding: 6px 11px;
+  opacity: 0.8;
+}
+
+/* ── Admin category tree ── */
+.category-admin-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.category-admin-node {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.category-admin-children {
+  padding-left: 20px;
+  border-left: 2px solid var(--accent-border);
+  margin-left: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Visual depth indicator on admin tree */
+.category-admin-node.depth-1 .category-item { background: #f5f8ff; border-color: #c8d8f8; }
+.category-admin-node.depth-2 .category-item { background: #f0f5ff; border-color: #b8ccf0; font-size: 0.92rem; }
+
+/* ── Drag-and-drop for categories ── */
+.drag-handle {
+  cursor: grab;
+  color: #bbb;
+  font-size: 1.15rem;
+  padding-right: 8px;
+  user-select: none;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.drag-handle:hover {
+  color: var(--accent);
+}
+
+.category-item[draggable]:active {
+  cursor: grabbing;
+}
+
+.category-item.drop-before {
+  border-top: 2px solid var(--accent) !important;
+}
+
+.category-item.drop-after {
+  border-bottom: 2px solid var(--accent) !important;
+}
+
+.empty-hint {
+  color: var(--text);
+  opacity: 0.55;
+  font-size: 0.88rem;
+  padding: 8px 0;
+}
+
+/* ── Product image / name clickable ── */
+.product-image--clickable {
+  cursor: pointer;
+}
+
+.product-image--clickable img {
+  transition: opacity 0.15s ease;
+}
+
+.product-image--clickable:hover img {
+  opacity: 0.85;
+}
+
+.product-name--clickable {
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.product-name--clickable:hover {
+  color: var(--accent);
+}
+
+/* ── Product modal ── */
+.product-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.product-modal {
+  background: #fff;
+  border-radius: 20px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  max-width: 720px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  position: relative;
+}
+
+.modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  color: var(--text-h);
+}
+
+.modal-close:hover {
+  background: #f0f0f0;
+}
+
+.modal-image {
+  background: #f8f8f8;
+  border-radius: 20px 0 0 20px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+}
+
+.modal-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.modal-details {
+  padding: 28px 28px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal-details h2 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.modal-details p {
+  margin: 0;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.modal-details .product-meta {
+  margin-top: auto;
+}
+
+.modal-details button {
+  padding: 13px 18px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+@media (max-width: 600px) {
+  .product-modal {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-image {
+    border-radius: 20px 20px 0 0;
+    min-height: 220px;
   }
 }
