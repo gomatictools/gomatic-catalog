@@ -4,6 +4,10 @@ import sqlite3 from 'sqlite3'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
+
+const JWT_SECRET = process.env.JWT_SECRET || 'gomatic-secret-2024'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -104,6 +108,41 @@ try {
 } catch {
   // column already exists — safe to ignore
 }
+
+await runAsync(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE,
+    name TEXT,
+    password_hash TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`)
+
+await runAsync(`
+  CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    status TEXT DEFAULT 'pending',
+    total REAL DEFAULT 0,
+    note TEXT DEFAULT '',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+`)
+
+await runAsync(`
+  CREATE TABLE IF NOT EXISTS order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER,
+    product_id INTEGER,
+    sku TEXT,
+    name TEXT,
+    price REAL,
+    quantity INTEGER,
+    FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
+  );
+`)
 
 const catCount = await getAsync('SELECT COUNT(*) as count FROM categories')
 if (catCount.count === 0) {
@@ -435,6 +474,112 @@ app.post('/api/inventory', async (req, res) => {
     if (!product) return res.status(404).json({ error: 'Product not found' })
     await runAsync('INSERT OR REPLACE INTO inventory (product_id, quantity, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)', [product.id, Number(quantity) || 0])
     res.json({ product_id: product.id, sku: product.sku, quantity: Number(quantity) || 0 })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Auth middleware ───────────────────────────────────────────────────────────
+
+const requireAuth = (req, res, next) => {
+  const header = req.headers.authorization
+  if (!header || !header.startsWith('Bearer ')) return res.status(401).json({ error: 'Не сте најавени.' })
+  try {
+    req.user = jwt.verify(header.slice(7), JWT_SECRET)
+    next()
+  } catch {
+    res.status(401).json({ error: 'Невалиден или истечен токен.' })
+  }
+}
+
+// ── Auth endpoints ────────────────────────────────────────────────────────────
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, name, password } = req.body
+    if (!email || !name || !password) return res.status(400).json({ error: 'Сите полиња се задолжителни.' })
+    if (password.length < 6) return res.status(400).json({ error: 'Лозинката мора да има барем 6 знаци.' })
+    const existing = await getAsync('SELECT id FROM users WHERE email = ?', [email.toLowerCase()])
+    if (existing) return res.status(409).json({ error: 'Е-пошта е веќе регистрирана.' })
+    const hash = await bcrypt.hash(password, 10)
+    const result = await runAsync('INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)', [email.toLowerCase(), name.trim(), hash])
+    const user = { id: result.lastID, email: email.toLowerCase(), name: name.trim() }
+    const token = jwt.sign(user, JWT_SECRET, { expiresIn: '30d' })
+    res.status(201).json({ token, user })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body
+    if (!email || !password) return res.status(400).json({ error: 'Внесете е-пошта и лозинка.' })
+    const row = await getAsync('SELECT * FROM users WHERE email = ?', [email.toLowerCase()])
+    if (!row) return res.status(401).json({ error: 'Погрешна е-пошта или лозинка.' })
+    const ok = await bcrypt.compare(password, row.password_hash)
+    if (!ok) return res.status(401).json({ error: 'Погрешна е-пошта или лозинка.' })
+    const user = { id: row.id, email: row.email, name: row.name }
+    const token = jwt.sign(user, JWT_SECRET, { expiresIn: '30d' })
+    res.json({ token, user })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ user: req.user })
+})
+
+// ── Orders ────────────────────────────────────────────────────────────────────
+
+app.post('/api/orders', requireAuth, async (req, res) => {
+  try {
+    const { items, note, total } = req.body
+    if (!items || !items.length) return res.status(400).json({ error: 'Кошничката е празна.' })
+    const order = await runAsync(
+      'INSERT INTO orders (user_id, status, total, note) VALUES (?, ?, ?, ?)',
+      [req.user.id, 'pending', Number(total) || 0, note || ''],
+    )
+    const orderId = order.lastID
+    for (const item of items) {
+      await runAsync(
+        'INSERT INTO order_items (order_id, product_id, sku, name, price, quantity) VALUES (?, ?, ?, ?, ?, ?)',
+        [orderId, item.product_id, item.sku, item.name, item.price, item.quantity],
+      )
+    }
+    res.status(201).json({ id: orderId, status: 'pending', total, created_at: new Date().toISOString() })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/orders/my', requireAuth, async (req, res) => {
+  try {
+    const rows = await allAsync('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC', [req.user.id])
+    const orders = await Promise.all(rows.map(async (o) => {
+      const items = await allAsync('SELECT * FROM order_items WHERE order_id = ?', [o.id])
+      return { ...o, items }
+    }))
+    res.json(orders)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Admin: all orders
+app.get('/api/orders', requireAuth, async (req, res) => {
+  try {
+    const rows = await allAsync(`
+      SELECT o.*, u.email, u.name as user_name
+      FROM orders o JOIN users u ON o.user_id = u.id
+      ORDER BY o.id DESC
+    `)
+    const orders = await Promise.all(rows.map(async (o) => {
+      const items = await allAsync('SELECT * FROM order_items WHERE order_id = ?', [o.id])
+      return { ...o, items }
+    }))
+    res.json(orders)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

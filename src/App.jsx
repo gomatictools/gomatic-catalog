@@ -50,6 +50,21 @@ function App() {
   const dragStateRef = useRef({ key: null, position: null })
   const [dropTarget, setDropTarget] = useState({ key: null, position: null })
 
+  // ── Auth state ───────────────────────────────────────────────────────────────
+  const [authUser, setAuthUser] = useState(null)
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth_token'))
+  const [authModal, setAuthModal] = useState(null) // 'login' | 'register' | null
+  const [authTab, setAuthTab] = useState('login')
+  const [authForm, setAuthForm] = useState({ email: '', name: '', password: '' })
+  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
+  const [orderNote, setOrderNote] = useState('')
+  const [orderSuccess, setOrderSuccess] = useState(false)
+  const [orderResult, setOrderResult] = useState(null)
+  const [cartOpen, setCartOpen] = useState(false)
+  const [myOrdersOpen, setMyOrdersOpen] = useState(false)
+  const [myOrders, setMyOrders] = useState([])
+
   const locale = translations[language]
 
   // Depth map: key → depth (0=root, 1=sub, 2=sub-sub)
@@ -160,6 +175,93 @@ function App() {
     loadCategories()
     loadProducts()
   }, [])
+
+  useEffect(() => {
+    if (!authToken) { setAuthUser(null); return }
+    fetch(`${API_BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${authToken}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) setAuthUser(data.user)
+        else { setAuthToken(null); localStorage.removeItem('auth_token') }
+      })
+      .catch(() => { setAuthToken(null); localStorage.removeItem('auth_token') })
+  }, [authToken])
+
+  const openAuthModal = (tab = 'login') => {
+    setAuthTab(tab)
+    setAuthForm({ email: '', name: '', password: '' })
+    setAuthError('')
+    setAuthModal(true)
+  }
+
+  const handleAuthSubmit = async (ev) => {
+    ev.preventDefault()
+    setAuthError('')
+    setAuthLoading(true)
+    try {
+      const endpoint = authTab === 'login' ? '/api/auth/login' : '/api/auth/register'
+      const body = authTab === 'login'
+        ? { email: authForm.email, password: authForm.password }
+        : { email: authForm.email, name: authForm.name, password: authForm.password }
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!res.ok) { setAuthError(data.error || 'Грешка'); return }
+      localStorage.setItem('auth_token', data.token)
+      setAuthToken(data.token)
+      setAuthUser(data.user)
+      setAuthModal(null)
+    } catch {
+      setAuthError('Проблем со врска со серверот.')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const logout = () => {
+    setAuthUser(null)
+    setAuthToken(null)
+    localStorage.removeItem('auth_token')
+    setMyOrdersOpen(false)
+  }
+
+  const loadMyOrders = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/orders/my`, { headers: { Authorization: `Bearer ${authToken}` } })
+      if (res.ok) setMyOrders(await res.json())
+    } catch { /* silent */ }
+  }
+
+  const placeOrder = async () => {
+    if (!authUser) { openAuthModal('login'); return }
+    if (!cartItems.length) return
+    try {
+      const items = cartItems.map(item => ({
+        product_id: item.product.id,
+        sku: item.product.sku,
+        name: item.product.name[language],
+        price: item.product.price,
+        quantity: item.quantity,
+      }))
+      const res = await fetch(`${API_BASE}/api/orders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ items, note: orderNote, total: totalPrice }),
+      })
+      if (!res.ok) { const b = await res.json(); setError(b.error || 'Грешка'); return }
+      const result = await res.json()
+      setCart([])
+      setOrderNote('')
+      setOrderResult({ id: result.id, date: new Date().toLocaleDateString() })
+      setOrderSuccess(true)
+      setTimeout(() => { setOrderSuccess(false); setOrderResult(null) }, 5000)
+    } catch {
+      setError('Не може да се испрати нарачката.')
+    }
+  }
 
 
   const resetNewProduct = () =>
@@ -288,7 +390,14 @@ function App() {
     ev.preventDefault()
     const mkName = newCategory.name.mk.trim()
     if (!mkName) return
-    const key = slugify(mkName)
+    const baseSlug = slugify(mkName)
+    const prefix = newCategory.parent_key ? `${newCategory.parent_key}_` : ''
+    let key = `${prefix}${baseSlug}`.slice(0, 50)
+    if (categoryList.some(c => c.key === key)) {
+      let i = 2
+      while (categoryList.some(c => c.key === `${key}_${i}`)) i++
+      key = `${key}_${i}`.slice(0, 50)
+    }
     try {
       const res = await fetch(`${API_BASE}/api/categories`, {
         method: 'POST',
@@ -539,9 +648,29 @@ function App() {
             ))}
           </select>
         </label>
-        <button type="button" className="admin-toggle" onClick={() => setAdminOpen(v => !v)}>
-          {adminOpen ? 'Close admin' : 'Admin'}
-        </button>
+        <div className="header-auth">
+          {authUser ? (
+            <>
+              <span className="auth-user-name">{authUser.name}</span>
+              <button type="button" className="btn-auth-outline" onClick={() => { setMyOrdersOpen(true); loadMyOrders() }}>
+                {locale.myOrders}
+              </button>
+              <button type="button" className="btn-auth-outline" onClick={logout}>{locale.logout}</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn-auth-outline" onClick={() => openAuthModal('login')}>{locale.login}</button>
+              <button type="button" className="btn-auth" onClick={() => openAuthModal('register')}>{locale.register}</button>
+            </>
+          )}
+          <button type="button" className="btn-cart" onClick={() => setCartOpen(true)}>
+            {locale.cartTitle}
+            {cart.length > 0 && <span className="cart-badge">{cart.reduce((s, e) => s + e.quantity, 0)}</span>}
+          </button>
+          <button type="button" className="admin-toggle" onClick={() => setAdminOpen(v => !v)}>
+            {adminOpen ? 'Close admin' : 'Admin'}
+          </button>
+        </div>
       </header>
 
       {adminOpen && (
@@ -755,48 +884,156 @@ function App() {
           )}
         </section>
 
-        {/* ── Cart ── */}
-        <aside className="cart-panel">
-          <div className="cart-card">
-            <h2>{locale.cartTitle}</h2>
-            <p className="cart-note">{locale.checkoutNote}</p>
-            {cartItems.length === 0 ? (
-              <div className="empty-state">{locale.emptyCart}</div>
+      </main>
+
+      {authModal && (
+        <div className="product-modal-overlay" onClick={() => setAuthModal(null)}>
+          <div className="auth-modal" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setAuthModal(null)}>✕</button>
+            <div className="auth-tabs">
+              <button
+                type="button"
+                className={authTab === 'login' ? 'auth-tab active' : 'auth-tab'}
+                onClick={() => { setAuthTab('login'); setAuthError('') }}
+              >{locale.loginTitle}</button>
+              <button
+                type="button"
+                className={authTab === 'register' ? 'auth-tab active' : 'auth-tab'}
+                onClick={() => { setAuthTab('register'); setAuthError('') }}
+              >{locale.registerTitle}</button>
+            </div>
+            <form onSubmit={handleAuthSubmit} className="auth-form">
+              <label>{locale.email}
+                <input type="email" required value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
+              </label>
+              {authTab === 'register' && (
+                <label>{locale.name}
+                  <input type="text" required value={authForm.name} onChange={e => setAuthForm(p => ({ ...p, name: e.target.value }))} />
+                </label>
+              )}
+              <label>{locale.password}
+                <input type="password" required minLength={6} value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} />
+              </label>
+              {authError && <p className="auth-error">{authError}</p>}
+              <button type="submit" className="btn-auth-submit" disabled={authLoading}>
+                {authLoading ? '…' : authTab === 'login' ? locale.loginBtn : locale.registerBtn}
+              </button>
+              <p className="auth-switch">
+                {authTab === 'login' ? locale.noAccount : locale.hasAccount}{' '}
+                <button type="button" className="link-btn" onClick={() => { setAuthTab(authTab === 'login' ? 'register' : 'login'); setAuthError('') }}>
+                  {authTab === 'login' ? locale.registerTitle : locale.loginTitle}
+                </button>
+              </p>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {myOrdersOpen && (
+        <div className="product-modal-overlay" onClick={() => setMyOrdersOpen(false)}>
+          <div className="orders-modal" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setMyOrdersOpen(false)}>✕</button>
+            <h2>{locale.ordersTitle}</h2>
+            {myOrders.length === 0 ? (
+              <p className="empty-state">{locale.noOrders}</p>
             ) : (
-              <div className="cart-list">
-                {cartItems.map(item => (
-                  <div key={item.productId} className="cart-item">
-                    <div>
-                      <h3>{item.product.name[language]}</h3>
-                      <p>{item.product.price.toFixed(2)} € × {item.quantity}</p>
-                      <p>{locale.productCode}: {item.product.sku}</p>
+              <div className="orders-list">
+                {myOrders.map(order => (
+                  <div key={order.id} className="order-card">
+                    <div className="order-card-header">
+                      <span>#{order.id}</span>
+                      <span className="order-status">{order.status}</span>
+                      <span>{new Date(order.created_at).toLocaleDateString()}</span>
+                      <strong>{order.total.toFixed(2)} €</strong>
                     </div>
-                    <div className="cart-actions">
-                      <label>
-                        {locale.quantity}
-                        <input
-                          type="number"
-                          min="1"
-                          value={item.quantity}
-                          onChange={e => updateQuantity(item.productId, Number(e.target.value))}
-                        />
-                      </label>
-                      <button type="button" className="remove" onClick={() => removeFromCart(item.productId)}>
-                        {locale.remove}
-                      </button>
-                    </div>
-                    <div className="cart-subtotal">{item.subtotal.toFixed(2)} €</div>
+                    <ul className="order-items-list">
+                      {order.items.map(item => (
+                        <li key={item.id}>{item.name} × {item.quantity} — {(item.price * item.quantity).toFixed(2)} €</li>
+                      ))}
+                    </ul>
+                    {order.note && <p className="order-note-text">{order.note}</p>}
                   </div>
                 ))}
               </div>
             )}
-            <div className="cart-footer">
-              <span>{locale.total}</span>
-              <strong>{totalPrice.toFixed(2)} €</strong>
-            </div>
           </div>
-        </aside>
-      </main>
+        </div>
+      )}
+
+      {cartOpen && (
+        <div className="product-modal-overlay" onClick={() => setCartOpen(false)}>
+          <div className="cart-modal" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setCartOpen(false)}>✕</button>
+            <h2>{locale.cartTitle}</h2>
+            {orderSuccess && orderResult ? (
+              <div className="order-success-full">
+                <div className="order-success-banner">{locale.orderSuccess}</div>
+                <p className="order-success-meta">
+                  {locale.orderDate}: {orderResult.date} &nbsp;|&nbsp; Бр. {orderResult.id}
+                </p>
+              </div>
+            ) : (
+              <>
+                {!authUser && <p className="cart-note">{locale.checkoutNote}</p>}
+                {cartItems.length === 0 ? (
+                  <div className="empty-state">{locale.emptyCart}</div>
+                ) : (
+                  <>
+                    <div className="cart-list">
+                      {cartItems.map(item => (
+                        <div key={item.productId} className="cart-item">
+                          <div>
+                            <h3>{item.product.name[language]}</h3>
+                            <p>{item.product.price.toFixed(2)} € × {item.quantity}</p>
+                            <p>{locale.productCode}: {item.product.sku}</p>
+                          </div>
+                          <div className="cart-actions">
+                            <label>
+                              {locale.quantity}
+                              <input
+                                type="number"
+                                min="1"
+                                value={item.quantity}
+                                onChange={e => updateQuantity(item.productId, Number(e.target.value))}
+                              />
+                            </label>
+                            <button type="button" className="remove" onClick={() => removeFromCart(item.productId)}>
+                              {locale.remove}
+                            </button>
+                          </div>
+                          <div className="cart-subtotal">{item.subtotal.toFixed(2)} €</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="cart-footer">
+                      <span>{locale.total}</span>
+                      <strong>{totalPrice.toFixed(2)} €</strong>
+                    </div>
+                    <div className="cart-order-section">
+                      <textarea
+                        className="cart-note-input"
+                        value={orderNote}
+                        onChange={e => setOrderNote(e.target.value)}
+                        placeholder={locale.orderNote}
+                        rows={2}
+                      />
+                      <div className="cart-modal-actions">
+                        <button type="button" className="btn-place-order" onClick={placeOrder}>
+                          {locale.placeOrder}
+                        </button>
+                        <button type="button" className="btn-continue-order" onClick={() => setCartOpen(false)}>
+                          {locale.continueOrder}
+                        </button>
+                      </div>
+                      {!authUser && <p className="cart-login-hint">{locale.checkoutNote}</p>}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {selectedProduct && (
         <div className="product-modal-overlay" onClick={() => setSelectedProduct(null)}>
