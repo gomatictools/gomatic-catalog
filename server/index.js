@@ -105,9 +105,12 @@ try {
 // Migration: add sort_order column for drag-and-drop reordering
 try {
   await runAsync('ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0')
-} catch {
-  // column already exists — safe to ignore
-}
+} catch { /* column already exists */ }
+
+// Migration: add sort_order to products
+try {
+  await runAsync('ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0')
+} catch { /* column already exists */ }
 
 await runAsync(`
   CREATE TABLE IF NOT EXISTS users (
@@ -115,8 +118,24 @@ await runAsync(`
     email TEXT UNIQUE,
     name TEXT,
     password_hash TEXT,
+    role TEXT DEFAULT 'user',
+    company_name TEXT DEFAULT '',
+    is_private INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
+`)
+
+// Migrations for existing DBs
+try { await runAsync("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'") } catch { /* exists */ }
+try { await runAsync("ALTER TABLE users ADD COLUMN company_name TEXT DEFAULT ''") } catch { /* exists */ }
+try { await runAsync("ALTER TABLE users ADD COLUMN is_private INTEGER DEFAULT 0") } catch { /* exists */ }
+
+// Make zoranveli@gmail.com admin; fallback: first user if no admin exists
+await runAsync("UPDATE users SET role='admin' WHERE email='zoranveli@gmail.com'")
+await runAsync(`
+  UPDATE users SET role='admin'
+  WHERE id=(SELECT MIN(id) FROM users)
+  AND NOT EXISTS (SELECT 1 FROM users WHERE role='admin')
 `)
 
 await runAsync(`
@@ -257,7 +276,7 @@ app.get('/api/categories', async (_req, res) => {
   }
 })
 
-app.post('/api/categories', async (req, res) => {
+app.post('/api/categories', requireAdmin, async (req, res) => {
   try {
     const { key, name, parent_key } = req.body
     if (!key || !name?.mk) return res.status(400).json({ error: 'key и name.mk се задолжителни' })
@@ -279,7 +298,7 @@ app.post('/api/categories', async (req, res) => {
   }
 })
 
-app.put('/api/categories/reorder', async (req, res) => {
+app.put('/api/categories/reorder', requireAdmin, async (req, res) => {
   try {
     const updates = req.body
     if (!Array.isArray(updates)) return res.status(400).json({ error: 'Expected array' })
@@ -292,7 +311,7 @@ app.put('/api/categories/reorder', async (req, res) => {
   }
 })
 
-app.put('/api/categories/:key', async (req, res) => {
+app.put('/api/categories/:key', requireAdmin, async (req, res) => {
   try {
     const { key } = req.params
     const { name, parent_key } = req.body
@@ -324,7 +343,7 @@ app.put('/api/categories/:key', async (req, res) => {
   }
 })
 
-app.delete('/api/categories/:key', async (req, res) => {
+app.delete('/api/categories/:key', requireAdmin, async (req, res) => {
   try {
     const { key } = req.params
     const inUse = await getAsync('SELECT COUNT(*) as count FROM products WHERE category = ?', [key])
@@ -344,9 +363,22 @@ app.delete('/api/categories/:key', async (req, res) => {
 
 // ── Products ──────────────────────────────────────────────────────────────────
 
+app.put('/api/products/reorder', requireAdmin, async (req, res) => {
+  try {
+    const updates = req.body
+    if (!Array.isArray(updates)) return res.status(400).json({ error: 'Expected array' })
+    for (const { id, sort_order } of updates) {
+      await runAsync('UPDATE products SET sort_order = ? WHERE id = ?', [sort_order, id])
+    }
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.get('/api/products', async (_req, res) => {
   try {
-    const rows = await allAsync('SELECT * FROM products ORDER BY id DESC')
+    const rows = await allAsync('SELECT * FROM products ORDER BY sort_order ASC, id ASC')
     const products = await Promise.all(rows.map(buildProduct))
     res.json(products)
   } catch (err) {
@@ -364,7 +396,7 @@ app.get('/api/products/:id', async (req, res) => {
   }
 })
 
-app.post('/api/products', async (req, res) => {
+app.post('/api/products', requireAdmin, async (req, res) => {
   try {
     const { sku, category, price, name, description, imageData } = req.body
     if (!sku || !category || !name || !description) {
@@ -392,7 +424,7 @@ app.post('/api/products', async (req, res) => {
   }
 })
 
-app.put('/api/products/:id', async (req, res) => {
+app.put('/api/products/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params
     const { category, price, sku, name, description, imageData } = req.body
@@ -431,7 +463,7 @@ app.put('/api/products/:id', async (req, res) => {
   }
 })
 
-app.delete('/api/products/:id', async (req, res) => {
+app.delete('/api/products/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params
     const existing = await getAsync('SELECT * FROM products WHERE id = ?', [id])
@@ -492,18 +524,30 @@ const requireAuth = (req, res, next) => {
   }
 }
 
+const requireAdmin = (req, res, next) => {
+  requireAuth(req, res, () => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Пристапот е забранет.' })
+    next()
+  })
+}
+
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, name, password } = req.body
+    const { email, name, password, company_name, is_private } = req.body
     if (!email || !name || !password) return res.status(400).json({ error: 'Сите полиња се задолжителни.' })
     if (password.length < 6) return res.status(400).json({ error: 'Лозинката мора да има барем 6 знаци.' })
     const existing = await getAsync('SELECT id FROM users WHERE email = ?', [email.toLowerCase()])
     if (existing) return res.status(409).json({ error: 'Е-пошта е веќе регистрирана.' })
     const hash = await bcrypt.hash(password, 10)
-    const result = await runAsync('INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)', [email.toLowerCase(), name.trim(), hash])
-    const user = { id: result.lastID, email: email.toLowerCase(), name: name.trim() }
+    const isPriv = is_private ? 1 : 0
+    const compName = isPriv ? '' : (company_name || '').trim()
+    const result = await runAsync(
+      'INSERT INTO users (email, name, password_hash, role, company_name, is_private) VALUES (?, ?, ?, ?, ?, ?)',
+      [email.toLowerCase(), name.trim(), hash, 'user', compName, isPriv]
+    )
+    const user = { id: result.lastID, email: email.toLowerCase(), name: name.trim(), role: 'user', company_name: compName, is_private: isPriv }
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '30d' })
     res.status(201).json({ token, user })
   } catch (err) {
@@ -519,7 +563,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!row) return res.status(401).json({ error: 'Погрешна е-пошта или лозинка.' })
     const ok = await bcrypt.compare(password, row.password_hash)
     if (!ok) return res.status(401).json({ error: 'Погрешна е-пошта или лозинка.' })
-    const user = { id: row.id, email: row.email, name: row.name }
+    const user = { id: row.id, email: row.email, name: row.name, role: row.role || 'user', company_name: row.company_name || '', is_private: row.is_private || 0 }
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '30d' })
     res.json({ token, user })
   } catch (err) {
@@ -568,7 +612,7 @@ app.get('/api/orders/my', requireAuth, async (req, res) => {
 })
 
 // Admin: all orders
-app.get('/api/orders', requireAuth, async (req, res) => {
+app.get('/api/orders', requireAdmin, async (req, res) => {
   try {
     const rows = await allAsync(`
       SELECT o.*, u.email, u.name as user_name

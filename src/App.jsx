@@ -29,6 +29,7 @@ function App() {
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [cart, setCart] = useState([])
   const [adminOpen, setAdminOpen] = useState(false)
+  const [adminTab, setAdminTab] = useState('products')
   const [productList, setProductList] = useState([])
   const [categoryList, setCategoryList] = useState([])
   const [loading, setLoading] = useState(true)
@@ -48,14 +49,16 @@ function App() {
   const [editProduct, setEditProduct] = useState(null)
   const [selectedProduct, setSelectedProduct] = useState(null)
   const dragStateRef = useRef({ key: null, position: null })
+  const dragProductRef = useRef({ id: null, position: 'after' })
   const [dropTarget, setDropTarget] = useState({ key: null, position: null })
+  const [dropProductTarget, setDropProductTarget] = useState({ id: null, position: null })
 
   // ── Auth state ───────────────────────────────────────────────────────────────
   const [authUser, setAuthUser] = useState(null)
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth_token'))
   const [authModal, setAuthModal] = useState(null) // 'login' | 'register' | null
   const [authTab, setAuthTab] = useState('login')
-  const [authForm, setAuthForm] = useState({ email: '', name: '', password: '' })
+  const [authForm, setAuthForm] = useState({ email: '', name: '', password: '', confirm_password: '', company_name: '', is_private: false })
   const [authError, setAuthError] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
   const [orderNote, setOrderNote] = useState('')
@@ -64,6 +67,8 @@ function App() {
   const [cartOpen, setCartOpen] = useState(false)
   const [myOrdersOpen, setMyOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
+  const [allOrdersOpen, setAllOrdersOpen] = useState(false)
+  const [allOrders, setAllOrders] = useState([])
 
   const locale = translations[language]
 
@@ -114,6 +119,19 @@ function App() {
     (key) => {
       const cat = categoryList.find(c => c.key === key)
       return cat ? (cat.name[language] || key) : key
+    },
+    [categoryList, language],
+  )
+
+  const getCategoryChain = useCallback(
+    (key) => {
+      const chain = []
+      let current = categoryList.find(c => c.key === key)
+      while (current) {
+        chain.unshift(current.name[language] || current.key)
+        current = current.parent_key ? categoryList.find(c => c.key === current.parent_key) : null
+      }
+      return chain.length ? chain : [key]
     },
     [categoryList, language],
   )
@@ -189,7 +207,7 @@ function App() {
 
   const openAuthModal = (tab = 'login') => {
     setAuthTab(tab)
-    setAuthForm({ email: '', name: '', password: '' })
+    setAuthForm({ email: '', name: '', password: '', confirm_password: '', company_name: '', is_private: false })
     setAuthError('')
     setAuthModal(true)
   }
@@ -197,12 +215,15 @@ function App() {
   const handleAuthSubmit = async (ev) => {
     ev.preventDefault()
     setAuthError('')
+    if (authTab === 'register' && authForm.password !== authForm.confirm_password) {
+      setAuthError('Лозинките не се совпаѓаат.'); return
+    }
     setAuthLoading(true)
     try {
       const endpoint = authTab === 'login' ? '/api/auth/login' : '/api/auth/register'
       const body = authTab === 'login'
         ? { email: authForm.email, password: authForm.password }
-        : { email: authForm.email, name: authForm.name, password: authForm.password }
+        : { email: authForm.email, name: authForm.name, password: authForm.password, company_name: authForm.company_name, is_private: authForm.is_private }
       const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,6 +253,13 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/orders/my`, { headers: { Authorization: `Bearer ${authToken}` } })
       if (res.ok) setMyOrders(await res.json())
+    } catch { /* silent */ }
+  }
+
+  const loadAllOrders = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/orders`, { headers: { Authorization: `Bearer ${authToken}` } })
+      if (res.ok) setAllOrders(await res.json())
     } catch { /* silent */ }
   }
 
@@ -314,7 +342,7 @@ function App() {
       }
       const res = await fetch(`${API_BASE}/api/products`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error()
@@ -353,7 +381,7 @@ function App() {
       }
       const res = await fetch(`${API_BASE}/api/products/${editingProductId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify(payload),
       })
       if (!res.ok) {
@@ -371,7 +399,7 @@ function App() {
 
   const deleteProduct = async (id) => {
     try {
-      const res = await fetch(`${API_BASE}/api/products/${id}`, { method: 'DELETE' })
+      const res = await fetch(`${API_BASE}/api/products/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
       if (!res.ok) {
         const b = await res.json().catch(() => ({}))
         throw new Error(b.error || `Серверска грешка (${res.status})`)
@@ -401,7 +429,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/categories`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({ key, name: newCategory.name, parent_key: newCategory.parent_key || null }),
       })
       if (!res.ok) { const b = await res.json(); throw new Error(b.error || 'Грешка') }
@@ -424,7 +452,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/categories/${encodeURIComponent(editingCategoryKey)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({ name: editCategory.name, parent_key: editCategory.parent_key || null }),
       })
       if (!res.ok) { const b = await res.json(); throw new Error(b.error || 'Грешка') }
@@ -438,7 +466,7 @@ function App() {
 
   const deleteCategory = async (key) => {
     try {
-      const res = await fetch(`${API_BASE}/api/categories/${encodeURIComponent(key)}`, { method: 'DELETE' })
+      const res = await fetch(`${API_BASE}/api/categories/${encodeURIComponent(key)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
       if (!res.ok) { const b = await res.json(); throw new Error(b.error || 'Грешка') }
       await loadCategories()
     } catch (err) {
@@ -483,7 +511,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/categories/reorder`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify(updates),
       })
       if (!res.ok) {
@@ -499,6 +527,52 @@ function App() {
   const handleCatDragEnd = () => {
     dragStateRef.current = { key: null, position: null }
     setDropTarget({ key: null, position: null })
+  }
+
+  // ── Product drag-and-drop reorder ─────────────────────────────────────────────
+
+  const handleProdDragStart = (e, id) => {
+    dragProductRef.current = { id, position: 'after' }
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleProdDragOver = (e, id) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const position = e.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+    dragProductRef.current.position = position
+    setDropProductTarget(prev => prev.id === id && prev.position === position ? prev : { id, position })
+  }
+
+  const handleProdDrop = async (e, targetId) => {
+    e.preventDefault()
+    const srcId = dragProductRef.current.id
+    const position = dragProductRef.current.position || 'after'
+    dragProductRef.current = { id: null, position: 'after' }
+    setDropProductTarget({ id: null, position: null })
+    if (!srcId || srcId === targetId) return
+    const all = [...productList]
+    const srcIdx = all.findIndex(p => p.id === srcId)
+    if (srcIdx === -1) return
+    const [srcItem] = all.splice(srcIdx, 1)
+    const tgtIdx = all.findIndex(p => p.id === targetId)
+    if (tgtIdx === -1) return
+    all.splice(position === 'before' ? tgtIdx : tgtIdx + 1, 0, srcItem)
+    const updates = all.map((p, i) => ({ id: p.id, sort_order: i }))
+    try {
+      await fetch(`${API_BASE}/api/products/reorder`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(updates),
+      })
+      await loadProducts()
+    } catch { setError('Не може да се зачува редоследот.') }
+  }
+
+  const handleProdDragEnd = () => {
+    dragProductRef.current = { id: null, position: 'after' }
+    setDropProductTarget({ id: null, position: null })
   }
 
   // ── Misc ─────────────────────────────────────────────────────────────────────
@@ -536,12 +610,14 @@ function App() {
     })
   }, [search, selectedCategory, language, productList, getDescendantKeys])
 
-  const addToCart = (productId) =>
+  const addToCart = (productId) => {
+    if (!authUser) { openAuthModal('login'); return }
     setCart(cur => {
       const item = cur.find(e => e.productId === productId)
       if (item) return cur.map(e => e.productId === productId ? { ...e, quantity: e.quantity + 1 } : e)
       return [...cur, { productId, quantity: 1 }]
     })
+  }
 
   const removeFromCart = (productId) => setCart(cur => cur.filter(e => e.productId !== productId))
 
@@ -600,7 +676,7 @@ function App() {
               >
                 <option value="">— Главна категорија —</option>
                 {editParentOptions.map(c => (
-                  <option key={c.id} value={c.id}>{'  '.repeat(c.depth)}{c.label}</option>
+                  <option key={c.id} value={c.id}>{'   '.repeat(c.depth)}{c.depth > 0 ? '└ ' : ''}{c.label}</option>
                 ))}
               </select>
             </div>
@@ -640,21 +716,19 @@ function App() {
           <h1>{locale.title}</h1>
           <p>{locale.subtitle}</p>
         </div>
-        <label className="language-select">
-          <span>{locale.languageLabel}</span>
-          <select value={language} onChange={e => setLanguage(e.target.value)}>
-            {availableLanguages.map(lang => (
-              <option key={lang.code} value={lang.code}>{lang.label}</option>
-            ))}
-          </select>
-        </label>
         <div className="header-auth">
           {authUser ? (
             <>
               <span className="auth-user-name">{authUser.name}</span>
-              <button type="button" className="btn-auth-outline" onClick={() => { setMyOrdersOpen(true); loadMyOrders() }}>
-                {locale.myOrders}
-              </button>
+              {authUser.role === 'admin' ? (
+                <button type="button" className="btn-auth-outline" onClick={() => { setAllOrdersOpen(true); loadAllOrders() }}>
+                  Сите нарачки
+                </button>
+              ) : (
+                <button type="button" className="btn-auth-outline" onClick={() => { setMyOrdersOpen(true); loadMyOrders() }}>
+                  {locale.myOrders}
+                </button>
+              )}
               <button type="button" className="btn-auth-outline" onClick={logout}>{locale.logout}</button>
             </>
           ) : (
@@ -663,31 +737,116 @@ function App() {
               <button type="button" className="btn-auth" onClick={() => openAuthModal('register')}>{locale.register}</button>
             </>
           )}
-          <button type="button" className="btn-cart" onClick={() => setCartOpen(true)}>
-            {locale.cartTitle}
-            {cart.length > 0 && <span className="cart-badge">{cart.reduce((s, e) => s + e.quantity, 0)}</span>}
-          </button>
-          <button type="button" className="admin-toggle" onClick={() => setAdminOpen(v => !v)}>
-            {adminOpen ? 'Close admin' : 'Admin'}
-          </button>
+          {authUser?.role !== 'admin' && (
+            <button type="button" className="btn-cart" onClick={() => setCartOpen(true)}>
+              {locale.cartTitle}
+              {cart.length > 0 && <span className="cart-badge">{cart.reduce((s, e) => s + e.quantity, 0)}</span>}
+            </button>
+          )}
+          {authUser?.role === 'admin' && (
+            <button type="button" className="admin-toggle" onClick={() => setAdminOpen(v => !v)}>
+              {adminOpen ? 'Close admin' : 'Admin'}
+            </button>
+          )}
+          <div className="lang-flags">
+            {[
+              { code: 'mk', flag: '🇲🇰', title: 'Македонски' },
+              { code: 'sr', flag: '🇷🇸', title: 'Српски' },
+              { code: 'sq', flag: '🇦🇱', title: 'Shqip' },
+              { code: 'en', flag: '🇬🇧', title: 'English' },
+            ].map(l => (
+              <button key={l.code} type="button" title={l.title}
+                className={`flag-btn${language === l.code ? ' active' : ''}`}
+                onClick={() => setLanguage(l.code)}
+              >{l.flag}</button>
+            ))}
+          </div>
         </div>
       </header>
 
-      {adminOpen && (
+      {adminOpen && authUser?.role === 'admin' && (
         <section className="admin-panel">
-          <h2>Admin — Управување со каталог</h2>
+          <div className="admin-tabs">
+            {[
+              { key: 'products',   label: 'Додавање производи' },
+              { key: 'categories', label: 'Додавање категории' },
+              { key: 'catalog',    label: 'Уредување на каталог' },
+              { key: 'db',         label: 'Управување со база' },
+            ].map(tab => (
+              <button
+                key={tab.key}
+                type="button"
+                className={`admin-tab${adminTab === tab.key ? ' active' : ''}`}
+                onClick={() => setAdminTab(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-          {/* ── Category management ── */}
-          <div className="admin-section">
-            <h3>Категории</h3>
-            <div className="category-manager">
-              <div className="category-admin-tree">
-                {renderCategoryAdminTree(categoryTree)}
-                {categoryTree.length === 0 && <p className="empty-hint">Нема додадени категории.</p>}
-              </div>
+          {/* ── Таб 1: Уредување на каталог ── */}
+          {adminTab === 'catalog' && (
+            <div className="admin-section">
+              {editingProductId !== null && editProduct ? (
+                <>
+                  <h3>Уреди производ — {editProduct.sku}</h3>
+                  <form onSubmit={saveEditProduct} className="admin-form">
+                    <div className="admin-grid">
+                      {availableLanguages.map(lang => (
+                        <div key={lang.code} className="admin-group">
+                          <label>Назив ({lang.label})</label>
+                          <input
+                            value={editProduct.name[lang.code]}
+                            onChange={e => handleEditProductChange(`name.${lang.code}`, e.target.value)}
+                          />
+                          <label>Опис ({lang.label})</label>
+                          <textarea
+                            value={editProduct.description[lang.code]}
+                            onChange={e => handleEditProductChange(`description.${lang.code}`, e.target.value)}
+                          />
+                        </div>
+                      ))}
+                      <div className="admin-group">
+                        <label>Категорија</label>
+                        <select value={editProduct.category} onChange={e => handleEditProductChange('category', e.target.value)}>
+                          {categoriesFlat.map(cat => (
+                            <option key={cat.id} value={cat.id}>{'   '.repeat(cat.depth)}{cat.depth > 0 ? '└ ' : ''}{cat.label}</option>
+                          ))}
+                        </select>
+                        <label>Цена</label>
+                        <input value={editProduct.price} onChange={e => handleEditProductChange('price', e.target.value)} />
+                        <label>SKU</label>
+                        <input value={editProduct.sku} onChange={e => handleEditProductChange('sku', e.target.value)} />
+                        <label>Слика</label>
+                        <input type="file" accept="image/*" onChange={e => handleImageFile(e.target.files?.[0], setEditProduct)} />
+                        {(editProduct.imageData || editProduct.image_url) && (
+                          <img src={editProduct.imageData || editProduct.image_url} alt="preview" style={{ maxWidth: 160, marginTop: 8 }} />
+                        )}
+                      </div>
+                    </div>
+                    <div className="admin-actions">
+                      <button type="submit" className="btn-save">Зачувај промени</button>
+                      <button type="button" className="btn-cancel" onClick={() => { setEditingProductId(null); setEditProduct(null) }}>Откажи</button>
+                    </div>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <h3>Категории</h3>
+                  <div className="category-admin-tree">
+                    {renderCategoryAdminTree(categoryTree)}
+                    {categoryTree.length === 0 && <p className="empty-hint">Нема додадени категории.</p>}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
+          {/* ── Таб 2: Додавање категории ── */}
+          {adminTab === 'categories' && (
+            <div className="admin-section">
+              <h3>Додај категорија</h3>
               <form onSubmit={addCategory} className="category-add-form">
-                <h4>Додај категорија</h4>
                 <div className="category-add-grid">
                   {availableLanguages.map(lang => (
                     <div key={lang.code} className="admin-group">
@@ -708,7 +867,7 @@ function App() {
                     >
                       <option value="">— Главна категорија —</option>
                       {validParentOptions.map(c => (
-                        <option key={c.id} value={c.id}>{'  '.repeat(c.depth)}{c.label}</option>
+                        <option key={c.id} value={c.id}>{'   '.repeat(c.depth)}{c.depth > 0 ? '└ ' : ''}{c.label}</option>
                       ))}
                     </select>
                   </div>
@@ -716,53 +875,10 @@ function App() {
                 <button type="submit" className="category-add-btn">+ Додај категорија</button>
               </form>
             </div>
-          </div>
+          )}
 
-          {/* ── Product add / edit ── */}
-          {editingProductId !== null && editProduct ? (
-            <div className="admin-section admin-section--edit">
-              <h3>Уреди производ — {editProduct.sku}</h3>
-              <form onSubmit={saveEditProduct} className="admin-form">
-                <div className="admin-grid">
-                  {availableLanguages.map(lang => (
-                    <div key={lang.code} className="admin-group">
-                      <label>Назив ({lang.label})</label>
-                      <input
-                        value={editProduct.name[lang.code]}
-                        onChange={e => handleEditProductChange(`name.${lang.code}`, e.target.value)}
-                      />
-                      <label>Опис ({lang.label})</label>
-                      <textarea
-                        value={editProduct.description[lang.code]}
-                        onChange={e => handleEditProductChange(`description.${lang.code}`, e.target.value)}
-                      />
-                    </div>
-                  ))}
-                  <div className="admin-group">
-                    <label>Категорија</label>
-                    <select value={editProduct.category} onChange={e => handleEditProductChange('category', e.target.value)}>
-                      {categoriesFlat.map(cat => (
-                        <option key={cat.id} value={cat.id}>{'  '.repeat(cat.depth)}{cat.label}</option>
-                      ))}
-                    </select>
-                    <label>Цена</label>
-                    <input value={editProduct.price} onChange={e => handleEditProductChange('price', e.target.value)} />
-                    <label>SKU</label>
-                    <input value={editProduct.sku} onChange={e => handleEditProductChange('sku', e.target.value)} />
-                    <label>Слика</label>
-                    <input type="file" accept="image/*" onChange={e => handleImageFile(e.target.files?.[0], setEditProduct)} />
-                    {(editProduct.imageData || editProduct.image_url) && (
-                      <img src={editProduct.imageData || editProduct.image_url} alt="preview" style={{ maxWidth: 160, marginTop: 8 }} />
-                    )}
-                  </div>
-                </div>
-                <div className="admin-actions">
-                  <button type="submit" className="btn-save">Зачувај промени</button>
-                  <button type="button" className="btn-cancel" onClick={() => { setEditingProductId(null); setEditProduct(null) }}>Откажи</button>
-                </div>
-              </form>
-            </div>
-          ) : (
+          {/* ── Таб 3: Додавање производи ── */}
+          {adminTab === 'products' && (
             <div className="admin-section">
               <h3>Додај нов производ</h3>
               <form onSubmit={addProduct} className="admin-form">
@@ -785,7 +901,7 @@ function App() {
                     <label>Категорија</label>
                     <select value={newProduct.category} onChange={e => handleNewProductChange('category', e.target.value)}>
                       {categoriesFlat.map(cat => (
-                        <option key={cat.id} value={cat.id}>{'  '.repeat(cat.depth)}{cat.label}</option>
+                        <option key={cat.id} value={cat.id}>{'   '.repeat(cat.depth)}{cat.depth > 0 ? '└ ' : ''}{cat.label}</option>
                       ))}
                     </select>
                     <label>Цена</label>
@@ -799,13 +915,28 @@ function App() {
                 </div>
                 <div className="admin-actions">
                   <button type="submit">Додај производ</button>
-                  <button type="button" onClick={exportProducts}>Export JSON</button>
-                  <label className="import-file">
-                    Import JSON
-                    <input type="file" accept="application/json" style={{ display: 'none' }} onChange={e => importProductsFromFile(e.target.files?.[0])} />
-                  </label>
                 </div>
               </form>
+            </div>
+          )}
+
+          {/* ── Таб 4: Управување со база ── */}
+          {adminTab === 'db' && (
+            <div className="admin-section">
+              <h3>Управување со база</h3>
+              <div className="db-actions">
+                <div className="db-action-group">
+                  <h4>Производи</h4>
+                  <p>Извоз или увоз на листата на производи во JSON формат.</p>
+                  <div className="admin-actions">
+                    <button type="button" onClick={exportProducts}>Извоз JSON</button>
+                    <label className="import-file">
+                      Увоз JSON
+                      <input type="file" accept="application/json" style={{ display: 'none' }} onChange={e => importProductsFromFile(e.target.files?.[0])} />
+                    </label>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </section>
@@ -853,7 +984,15 @@ function App() {
           ) : (
             <div className="product-grid">
               {filteredProducts.map(product => (
-                <article key={product.id} className="product-card">
+                <article
+                  key={product.id}
+                  className={`product-card${authUser?.role === 'admin' && adminOpen ? ' admin-draggable' : ''}${dropProductTarget.id === product.id ? ` drop-prod-${dropProductTarget.position}` : ''}`}
+                  draggable={!!(authUser?.role === 'admin' && adminOpen)}
+                  onDragStart={authUser?.role === 'admin' && adminOpen ? e => handleProdDragStart(e, product.id) : undefined}
+                  onDragOver={authUser?.role === 'admin' && adminOpen ? e => handleProdDragOver(e, product.id) : undefined}
+                  onDrop={authUser?.role === 'admin' && adminOpen ? e => handleProdDrop(e, product.id) : undefined}
+                  onDragEnd={authUser?.role === 'admin' && adminOpen ? handleProdDragEnd : undefined}
+                >
                   <div className="product-image product-image--clickable" onClick={() => setSelectedProduct(product)}>
                     <img
                       src={product.image_url || `https://via.placeholder.com/320x220?text=${encodeURIComponent(product.name[language])}`}
@@ -861,7 +1000,15 @@ function App() {
                     />
                   </div>
                   <div className="product-details">
-                    <span className="product-category">{getCategoryName(product.category)}</span>
+                    <div className="product-category">
+                      {(() => {
+                        const chain = getCategoryChain(product.category)
+                        const padded = chain.length >= 2 ? chain : [...chain, ...Array(2 - chain.length).fill('')]
+                        return padded.map((name, i) => (
+                          <span key={i} className={name === '' ? 'cat-placeholder' : ''}>{name || ' '}</span>
+                        ))
+                      })()}
+                    </div>
                     <h2 className="product-name--clickable" onClick={() => setSelectedProduct(product)}>{product.name[language]}</h2>
                     <div className="product-meta">
                       <span>{locale.productCode}: {product.sku}</span>
@@ -903,17 +1050,34 @@ function App() {
               >{locale.registerTitle}</button>
             </div>
             <form onSubmit={handleAuthSubmit} className="auth-form">
-              <label>{locale.email}
-                <input type="email" required value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
-              </label>
               {authTab === 'register' && (
                 <label>{locale.name}
                   <input type="text" required value={authForm.name} onChange={e => setAuthForm(p => ({ ...p, name: e.target.value }))} />
                 </label>
               )}
+              <label>{locale.email}
+                <input type="email" required value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
+              </label>
               <label>{locale.password}
                 <input type="password" required minLength={6} value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} />
               </label>
+              {authTab === 'register' && (
+                <>
+                  <label>Потврди лозинка
+                    <input type="password" required minLength={6} value={authForm.confirm_password} onChange={e => setAuthForm(p => ({ ...p, confirm_password: e.target.value }))} />
+                  </label>
+                  {!authForm.is_private && (
+                    <label>Име на компанија
+                      <input type="text" value={authForm.company_name} onChange={e => setAuthForm(p => ({ ...p, company_name: e.target.value }))} />
+                    </label>
+                  )}
+                  <label className="auth-checkbox-label">
+                    <input type="checkbox" checked={authForm.is_private}
+                      onChange={e => setAuthForm(p => ({ ...p, is_private: e.target.checked, company_name: '' }))} />
+                    Приватно лице
+                  </label>
+                </>
+              )}
               {authError && <p className="auth-error">{authError}</p>}
               <button type="submit" className="btn-auth-submit" disabled={authLoading}>
                 {authLoading ? '…' : authTab === 'login' ? locale.loginBtn : locale.registerBtn}
@@ -942,6 +1106,38 @@ function App() {
                   <div key={order.id} className="order-card">
                     <div className="order-card-header">
                       <span>#{order.id}</span>
+                      <span className="order-status">{order.status}</span>
+                      <span>{new Date(order.created_at).toLocaleDateString()}</span>
+                      <strong>{order.total.toFixed(2)} €</strong>
+                    </div>
+                    <ul className="order-items-list">
+                      {order.items.map(item => (
+                        <li key={item.id}>{item.name} × {item.quantity} — {(item.price * item.quantity).toFixed(2)} €</li>
+                      ))}
+                    </ul>
+                    {order.note && <p className="order-note-text">{order.note}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {allOrdersOpen && (
+        <div className="product-modal-overlay" onClick={() => setAllOrdersOpen(false)}>
+          <div className="orders-modal orders-modal--wide" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setAllOrdersOpen(false)}>✕</button>
+            <h2>Сите нарачки</h2>
+            {allOrders.length === 0 ? (
+              <p className="empty-state">Нема нарачки.</p>
+            ) : (
+              <div className="orders-list">
+                {allOrders.map(order => (
+                  <div key={order.id} className="order-card">
+                    <div className="order-card-header">
+                      <span>#{order.id}</span>
+                      <span className="order-user-tag">{order.user_name} ({order.email})</span>
                       <span className="order-status">{order.status}</span>
                       <span>{new Date(order.created_at).toLocaleDateString()}</span>
                       <strong>{order.total.toFixed(2)} €</strong>
@@ -1046,7 +1242,11 @@ function App() {
               />
             </div>
             <div className="modal-details">
-              <span className="product-category">{getCategoryName(selectedProduct.category)}</span>
+              <div className="product-category">
+                {getCategoryChain(selectedProduct.category).map((name, i) => (
+                  <span key={i}>{name}</span>
+                ))}
+              </div>
               <h2>{selectedProduct.name[language]}</h2>
               <p>{selectedProduct.description[language]}</p>
               <div className="product-meta">
