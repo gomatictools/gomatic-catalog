@@ -1,108 +1,104 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+  /* ── Industrial B2B — Color System ───────────────────────── */
+  --navy-900: #0B1C36;
+  --navy-800: #152848;
+  --navy-700: #1D3A6E;
+  --navy-600: #2C5282;
+  --navy-100: #E8F0FA;
+  --navy-50:  #F3F7FC;
 
-  --sans: 'Play', system-ui, 'Segoe UI', sans-serif;
-  --heading: 'Play', system-ui, 'Segoe UI', sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+  --orange-700: #B8440C;
+  --orange-600: #D14F0F;
+  --orange-500: #E05A1A;
+  --orange-100: #FEF0E8;
+  --orange-50:  #FFF7F3;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
+  --steel-900: #111827;
+  --steel-800: #1A202C;
+  --steel-700: #2D3748;
+  --steel-600: #4A5568;
+  --steel-500: #718096;
+  --steel-400: #A0AEC0;
+  --steel-300: #CBD5E0;
+  --steel-200: #E2E8F0;
+  --steel-100: #F7FAFC;
+  --steel-50:  #FAFBFC;
+
+  --success-700: #14532D;
+  --success-600: #166534;
+  --success-100: #DCFCE7;
+  --danger-700:  #7F1D1D;
+  --danger-600:  #991B1B;
+  --danger-100:  #FEE2E2;
+  --warning-600: #92400E;
+  --warning-100: #FEF3C7;
+
+  /* ── Semantic aliases ─────────────────────────────────────── */
+  --text:          var(--steel-600);
+  --text-h:        var(--steel-800);
+  --text-muted:    var(--steel-500);
+  --bg:            #EEF2F7;
+  --surface:       #FFFFFF;
+  --border:        var(--steel-200);
+  --border-strong: var(--steel-300);
+  --accent:        var(--orange-600);
+  --accent-h:      var(--orange-700);
+  --accent-bg:     var(--orange-100);
+  --accent-border: rgba(209, 79, 15, 0.25);
+
+  /* ── Typography ───────────────────────────────────────────── */
+  --sans: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Roboto Mono', ui-monospace, Consolas, monospace;
+
+  /* ── Shadows (industrial — суптилна сина нота) ───────────── */
+  --shadow-xs:    0 1px 2px rgba(11,28,54,0.05);
+  --shadow-sm:    0 1px 4px rgba(11,28,54,0.08), 0 2px 8px rgba(11,28,54,0.04);
+  --shadow-md:    0 4px 16px rgba(11,28,54,0.10), 0 1px 4px rgba(11,28,54,0.06);
+  --shadow-lg:    0 8px 32px rgba(11,28,54,0.15), 0 2px 8px rgba(11,28,54,0.08);
+  --shadow-modal: 0 20px 60px rgba(11,28,54,0.25), 0 4px 16px rgba(11,28,54,0.12);
+
+  /* ── Radius — остри, не playful ───────────────────────────── */
+  --r-sm:  4px;
+  --r-md:  6px;
+  --r-lg:  8px;
+  --r-xl:  10px;
+
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: #f3f5f8;
+  background: var(--bg);
 }
 
 #root {
   width: 100%;
   margin: 0;
   padding: 0;
-  box-sizing: border-box;
 }
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
+h1, h2, h3, h4 {
+  font-family: var(--sans);
+  font-weight: 700;
   color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
-p {
   margin: 0;
+  line-height: 1.3;
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
+h1 { font-size: 24px; letter-spacing: -0.4px; }
+h2 { font-size: 18px; letter-spacing: -0.2px; }
+h3 { font-size: 15px; }
+h4 { font-size: 13px; }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
-}
+p { margin: 0; }

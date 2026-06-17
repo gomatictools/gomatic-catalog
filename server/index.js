@@ -257,6 +257,26 @@ const saveImageFromData = (productId, imageData) => {
   return url
 }
 
+// ── Auth middleware ───────────────────────────────────────────────────────────
+
+const requireAuth = (req, res, next) => {
+  const header = req.headers.authorization
+  if (!header || !header.startsWith('Bearer ')) return res.status(401).json({ error: 'Не сте најавени.' })
+  try {
+    req.user = jwt.verify(header.slice(7), JWT_SECRET)
+    next()
+  } catch {
+    res.status(401).json({ error: 'Невалиден или истечен токен.' })
+  }
+}
+
+const requireAdmin = (req, res, next) => {
+  requireAuth(req, res, () => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Пристапот е забранет.' })
+    next()
+  })
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
@@ -511,26 +531,6 @@ app.post('/api/inventory', async (req, res) => {
   }
 })
 
-// ── Auth middleware ───────────────────────────────────────────────────────────
-
-const requireAuth = (req, res, next) => {
-  const header = req.headers.authorization
-  if (!header || !header.startsWith('Bearer ')) return res.status(401).json({ error: 'Не сте најавени.' })
-  try {
-    req.user = jwt.verify(header.slice(7), JWT_SECRET)
-    next()
-  } catch {
-    res.status(401).json({ error: 'Невалиден или истечен токен.' })
-  }
-}
-
-const requireAdmin = (req, res, next) => {
-  requireAuth(req, res, () => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Пристапот е забранет.' })
-    next()
-  })
-}
-
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 
 app.post('/api/auth/register', async (req, res) => {
@@ -581,17 +581,36 @@ app.post('/api/orders', requireAuth, async (req, res) => {
   try {
     const { items, note, total } = req.body
     if (!items || !items.length) return res.status(400).json({ error: 'Кошничката е празна.' })
+
+    // Check stock availability before creating the order
+    for (const item of items) {
+      const inv = await getAsync('SELECT quantity FROM inventory WHERE product_id = ?', [item.product_id])
+      const available = inv?.quantity ?? 0
+      if (available < item.quantity) {
+        return res.status(409).json({
+          error: `„${item.name}" — нема доволно залиха. Достапно: ${available} ед., нарачано: ${item.quantity} ед.`,
+        })
+      }
+    }
+
     const order = await runAsync(
       'INSERT INTO orders (user_id, status, total, note) VALUES (?, ?, ?, ?)',
       [req.user.id, 'pending', Number(total) || 0, note || ''],
     )
     const orderId = order.lastID
+
     for (const item of items) {
       await runAsync(
         'INSERT INTO order_items (order_id, product_id, sku, name, price, quantity) VALUES (?, ?, ?, ?, ?, ?)',
         [orderId, item.product_id, item.sku, item.name, item.price, item.quantity],
       )
+      // Reduce inventory — never go below 0
+      await runAsync(
+        'UPDATE inventory SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
+        [item.quantity, item.product_id],
+      )
     }
+
     res.status(201).json({ id: orderId, status: 'pending', total, created_at: new Date().toISOString() })
   } catch (err) {
     res.status(500).json({ error: err.message })
