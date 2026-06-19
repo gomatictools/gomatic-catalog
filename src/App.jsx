@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search, ShoppingCart, X, Package, CheckCircle2, XCircle,
-  Settings, ClipboardList, ChevronRight, Truck, LogOut, User,
-  Plus, Minus, Tag
+  Settings, ClipboardList, ChevronLeft, ChevronRight, Truck, LogOut, User,
+  Plus, Minus, Tag, AlertTriangle, ArrowDownCircle, ArrowUpCircle, History
 } from 'lucide-react'
 import './App.css'
 import { translations } from './data'
@@ -36,6 +36,7 @@ function App() {
   const [cart, setCart] = useState([])
   const [adminOpen, setAdminOpen] = useState(false)
   const [adminTab, setAdminTab] = useState('products')
+  const [adminContentOpen, setAdminContentOpen] = useState(false)
   const [productList, setProductList] = useState([])
   const [categoryList, setCategoryList] = useState([])
   const [loading, setLoading] = useState(true)
@@ -46,7 +47,12 @@ function App() {
     category: '',
     price: '',
     sku: '',
-    imageData: '',
+    images: ['', '', ''],
+    stock: '0',
+    critical_stock: '0',
+    stock_date: new Date().toISOString().split('T')[0],
+    stock_party: '',
+    stock_note: '',
   })
   const [newCategory, setNewCategory] = useState(emptyNewCategory())
   const [editingCategoryKey, setEditingCategoryKey] = useState(null)
@@ -72,12 +78,27 @@ function App() {
   const [orderSuccess, setOrderSuccess] = useState(false)
   const [orderResult, setOrderResult] = useState(null)
   const [cartOpen, setCartOpen] = useState(false)
+  const [cardQuantities, setCardQuantities] = useState({})
+  const [stockModal, setStockModal] = useState(null)
+  const [stockForm, setStockForm] = useState({ quantity: '1', party: '', note: '', date: '' })
+  const [stockHistory, setStockHistory] = useState(null)
+  const [stockHistoryData, setStockHistoryData] = useState([])
+  const [carouselIdx, setCarouselIdx] = useState(0)
+  const [modalQty, setModalQty] = useState(1)
   const [myOrdersOpen, setMyOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
   const [allOrdersOpen, setAllOrdersOpen] = useState(false)
   const [allOrders, setAllOrders] = useState([])
+  const [adminStockFilter, setAdminStockFilter] = useState('all')
+  const [fulfilledIds, setFulfilledIds] = useState(new Set())
+  const [manualOrderedIds, setManualOrderedIds] = useState(new Set())
 
   const locale = translations[language]
+  const isAdmin = authUser?.role === 'admin'
+
+  useEffect(() => { setCarouselIdx(0); setModalQty(1) }, [selectedProduct?.id])
+
+  useEffect(() => { if (authUser?.role === 'admin') setAdminOpen(true) }, [authUser])
 
   // ── Category tree helpers ─────────────────────────────────────────────────────
   const catDepthMap = useMemo(() => {
@@ -203,6 +224,15 @@ function App() {
       .catch(() => { setAuthToken(null); localStorage.removeItem('auth_token') })
   }, [authToken])
 
+  useEffect(() => {
+    if (isAdmin && authToken) {
+      fetch(`${API_BASE}/api/orders`, { headers: { Authorization: `Bearer ${authToken}` } })
+        .then(r => r.ok ? r.json() : [])
+        .then(data => setAllOrders(data))
+        .catch(() => {})
+    }
+  }, [isAdmin, authToken])
+
   // ── Auth ──────────────────────────────────────────────────────────────────────
   const openAuthModal = (tab = 'login') => {
     setAuthTab(tab)
@@ -284,10 +314,55 @@ function App() {
       setOrderResult({ id: result.id, date: new Date().toLocaleDateString() })
       setOrderSuccess(true)
       setTimeout(() => { setOrderSuccess(false); setOrderResult(null) }, 6000)
+      loadProducts()
     } catch {
       setError('Не може да се испрати нарачката.')
     }
   }
+
+  const openStockModal = (type, product) => {
+    const today = new Date().toISOString().split('T')[0]
+    setStockForm({ quantity: '1', party: '', note: '', date: today })
+    setStockModal({ type, product })
+  }
+
+  const submitStockMovement = async (ev) => {
+    ev.preventDefault()
+    const { type, product } = stockModal
+    try {
+      const res = await fetch(`${API_BASE}/api/stock/${type}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          product_id: product.id,
+          quantity: Math.max(1, Number(stockForm.quantity) || 1),
+          party: stockForm.party,
+          note: stockForm.note,
+          date: stockForm.date,
+        }),
+      })
+      if (!res.ok) { const b = await res.json(); setError(b.error || 'Грешка'); return }
+      if (type === 'in' && pendingOrderProductIds.has(product.id)) {
+        setFulfilledIds(prev => new Set([...prev, product.id]))
+      }
+      await loadProducts()
+      setStockModal(null)
+    } catch {
+      setError('Не може да се зачува движење на залиха.')
+    }
+  }
+
+  const openStockHistory = async (product) => {
+    setStockHistory(product)
+    setStockHistoryData([])
+    try {
+      const res = await fetch(`${API_BASE}/api/stock/${product.id}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      })
+      if (res.ok) setStockHistoryData(await res.json())
+    } catch { /* silent */ }
+  }
+
 
   // ── Product CRUD ──────────────────────────────────────────────────────────────
   const resetNewProduct = () =>
@@ -297,7 +372,12 @@ function App() {
       category: categoryList[0]?.key || '',
       price: '',
       sku: '',
-      imageData: '',
+      images: ['', '', ''],
+      stock: '0',
+      critical_stock: '0',
+      stock_date: new Date().toISOString().split('T')[0],
+      stock_party: '',
+      stock_note: '',
     })
 
   const handleNewProductChange = (path, value) => {
@@ -328,13 +408,15 @@ function App() {
   const addProduct = async (ev) => {
     ev.preventDefault()
     try {
+      const [primaryImg, ...extraImgs] = newProduct.images
       const payload = {
         sku: newProduct.sku || `P-${Date.now()}`,
         category: newProduct.category,
         price: Number(newProduct.price) || 0,
         name: newProduct.name,
         description: newProduct.description,
-        imageData: newProduct.imageData,
+        imageData: primaryImg || undefined,
+        critical_stock: Number(newProduct.critical_stock) || 0,
       }
       const res = await fetch(`${API_BASE}/api/products`, {
         method: 'POST',
@@ -342,6 +424,30 @@ function App() {
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error()
+      const created = await res.json()
+      for (const imgData of extraImgs) {
+        if (imgData) {
+          await fetch(`${API_BASE}/api/products/${created.id}/images`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({ imageData: imgData }),
+          })
+        }
+      }
+      const stockQty = Math.max(0, Number(newProduct.stock) || 0)
+      if (stockQty > 0 && created.id) {
+        await fetch(`${API_BASE}/api/stock/in`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+          body: JSON.stringify({
+            product_id: created.id,
+            quantity: stockQty,
+            party: newProduct.stock_party || '',
+            note: newProduct.stock_note || '',
+            date: newProduct.stock_date || new Date().toISOString().split('T')[0],
+          }),
+        })
+      }
       await loadProducts()
       resetNewProduct()
     } catch {
@@ -357,9 +463,10 @@ function App() {
       category: product.category,
       price: String(product.price),
       sku: product.sku,
-      imageData: '',
-      image_url: product.image_url || '',
+      images: product.images || [],
+      pendingImages: [],
       stock: String(product.stock ?? 0),
+      critical_stock: String(product.critical_stock ?? 0),
     })
     setEditModalOpen(true)
   }
@@ -373,7 +480,7 @@ function App() {
         price: Number(editProduct.price) || 0,
         name: editProduct.name,
         description: editProduct.description,
-        imageData: editProduct.imageData || undefined,
+        critical_stock: Number(editProduct.critical_stock ?? 0) || 0,
       }
       const res = await fetch(`${API_BASE}/api/products/${editingProductId}`, {
         method: 'PUT',
@@ -383,6 +490,15 @@ function App() {
       if (!res.ok) {
         const b = await res.json().catch(() => ({}))
         throw new Error(b.error || `Серверска грешка (${res.status})`)
+      }
+      for (const imgData of (editProduct.pendingImages || [])) {
+        if (imgData) {
+          await fetch(`${API_BASE}/api/products/${editingProductId}/images`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({ imageData: imgData }),
+          })
+        }
       }
       await fetch(`${API_BASE}/api/inventory`, {
         method: 'POST',
@@ -395,6 +511,18 @@ function App() {
       setEditModalOpen(false)
     } catch (err) {
       setError(err.message)
+    }
+  }
+
+  const deleteEditImage = async (imageId) => {
+    try {
+      await fetch(`${API_BASE}/api/products/${editingProductId}/images/${imageId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      })
+      setEditProduct(prev => ({ ...prev, images: prev.images.filter(img => img.id !== imageId) }))
+    } catch {
+      setError('Не може да се избрише сликата.')
     }
   }
 
@@ -592,23 +720,57 @@ function App() {
     reader.readAsText(file)
   }
 
+  // ── Stock helpers ─────────────────────────────────────────────────────────────
+  const isInStock = (product) => (product.stock ?? 0) > 0
+
+  const isCriticalStock = (product) => {
+    const stock = product.stock ?? 0
+    const critical = product.critical_stock ?? 0
+    return stock > 0 && critical > 0 && stock <= critical
+  }
+
   // ── Derived data ──────────────────────────────────────────────────────────────
+  const orderedProductIds = useMemo(() => {
+    const ids = new Set()
+    allOrders.forEach(order => order.items?.forEach(item => ids.add(item.product_id)))
+    return ids
+  }, [allOrders])
+
+  const pendingOrderProductIds = useMemo(() => {
+    const ids = new Set()
+    orderedProductIds.forEach(id => { if (!fulfilledIds.has(id)) ids.add(id) })
+    manualOrderedIds.forEach(id => { if (!fulfilledIds.has(id)) ids.add(id) })
+    return ids
+  }, [orderedProductIds, manualOrderedIds, fulfilledIds])
+
+  const toggleManualOrdered = (productId) => {
+    setManualOrderedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(productId)) { next.delete(productId) } else { next.add(productId) }
+      return next
+    })
+    setFulfilledIds(prev => { const next = new Set(prev); next.delete(productId); return next })
+  }
+
   const filteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase()
     const descendantKeys = selectedCategory === 'all' ? null : getDescendantKeys(selectedCategory)
     return productList.filter(product => {
       if (descendantKeys && !descendantKeys.has(product.category)) return false
-      if (!q) return true
-      return `${product.name[language]} ${product.description[language]} ${product.sku}`.toLowerCase().includes(q)
+      if (q && !`${product.name[language]} ${product.description[language]} ${product.sku}`.toLowerCase().includes(q)) return false
+      if (adminStockFilter === 'critical') return isCriticalStock(product)
+      if (adminStockFilter === 'out') return !isInStock(product)
+      if (adminStockFilter === 'ordered') return pendingOrderProductIds.has(product.id)
+      return true
     })
-  }, [search, selectedCategory, language, productList, getDescendantKeys])
+  }, [search, selectedCategory, language, productList, getDescendantKeys, adminStockFilter, orderedProductIds])
 
-  const addToCart = (productId) => {
+  const addToCart = (productId, qty = 1) => {
     if (!authUser) { openAuthModal('login'); return }
     setCart(cur => {
       const item = cur.find(e => e.productId === productId)
-      if (item) return cur.map(e => e.productId === productId ? { ...e, quantity: e.quantity + 1 } : e)
-      return [...cur, { productId, quantity: 1 }]
+      if (item) return cur.map(e => e.productId === productId ? { ...e, quantity: e.quantity + qty } : e)
+      return [...cur, { productId, quantity: qty }]
     })
   }
 
@@ -701,13 +863,11 @@ function App() {
     ))
 
   // ── Stock helpers ─────────────────────────────────────────────────────────────
-  const isInStock = (product) => (product.stock ?? 0) > 0
-
-  const StockBadge = ({ product }) => {
+  const StockBadge = ({ product, critical }) => {
     if (isInStock(product)) {
       return (
-        <span className="stock-badge stock-badge--in">
-          <CheckCircle2 size={9} strokeWidth={3} />
+        <span className={`stock-badge ${critical ? 'stock-badge--critical' : 'stock-badge--in'}`}>
+          {critical ? <AlertTriangle size={9} strokeWidth={3} /> : <CheckCircle2 size={9} strokeWidth={3} />}
           {product.stock} ед.
         </span>
       )
@@ -807,23 +967,37 @@ function App() {
       {/* ── Admin panel ── */}
       {adminOpen && authUser?.role === 'admin' && (
         <section className="admin-panel">
-          <div className="admin-tabs">
-            {[
-              { key: 'products',   label: 'Додавање производи' },
-              { key: 'categories', label: 'Додавање категории' },
-              { key: 'catalog',    label: 'Уредување на каталог' },
-              { key: 'db',         label: 'Управување со база' },
-            ].map(tab => (
-              <button
-                key={tab.key}
-                type="button"
-                className={`admin-tab${adminTab === tab.key ? ' active' : ''}`}
-                onClick={() => setAdminTab(tab.key)}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div className="admin-panel__tabs-bar">
+            <div className="admin-panel__inner">
+              <div className="admin-tabs">
+                {[
+                  { key: 'products',   label: 'Додавање производи' },
+                  { key: 'categories', label: 'Додавање категории' },
+                  { key: 'catalog',    label: 'Уредување на каталог' },
+                  { key: 'db',         label: 'Управување со база' },
+                ].map(tab => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={`admin-tab${adminTab === tab.key && adminContentOpen ? ' active' : ''}`}
+                    onClick={() => {
+                      if (adminTab === tab.key) {
+                        setAdminContentOpen(v => !v)
+                      } else {
+                        setAdminTab(tab.key)
+                        setAdminContentOpen(true)
+                      }
+                    }}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
+
+          {adminContentOpen && (
+          <div className="admin-panel__inner">
 
           {/* Таб: Уредување на каталог */}
           {adminTab === 'catalog' && (
@@ -852,11 +1026,43 @@ function App() {
                         <input value={editProduct.price} onChange={e => handleEditProductChange('price', e.target.value)} />
                         <label>SKU</label>
                         <input value={editProduct.sku} onChange={e => handleEditProductChange('sku', e.target.value)} />
-                        <label>Слика</label>
-                        <input type="file" accept="image/*" onChange={e => handleImageFile(e.target.files?.[0], setEditProduct)} />
-                        {(editProduct.imageData || editProduct.image_url) && (
-                          <img src={editProduct.imageData || editProduct.image_url} alt="preview" style={{ maxWidth: 160, marginTop: 8, borderRadius: 6 }} />
-                        )}
+                        <label>Слики (до 3)</label>
+                        <div className="img-gallery-slots">
+                          {(editProduct.images || []).map((img, i) => (
+                            <div key={img.id} className="img-slot img-slot--filled">
+                              <img src={img.url} alt={`Слика ${i + 1}`} />
+                              {i === 0 && <span className="img-slot__badge">Главна</span>}
+                              <button type="button" className="img-slot__remove" onClick={() => deleteEditImage(img.id)}>
+                                <X size={11} />
+                              </button>
+                            </div>
+                          ))}
+                          {(editProduct.pendingImages || []).map((imgData, i) => (
+                            <div key={`p${i}`} className="img-slot img-slot--filled">
+                              <img src={imgData} alt="нова" />
+                              <button type="button" className="img-slot__remove"
+                                onClick={() => setEditProduct(prev => ({ ...prev, pendingImages: prev.pendingImages.filter((_, j) => j !== i) }))}>
+                                <X size={11} />
+                              </button>
+                            </div>
+                          ))}
+                          {((editProduct.images?.length || 0) + (editProduct.pendingImages?.length || 0)) < 3 && (
+                            <div className="img-slot">
+                              <label className="img-slot__upload">
+                                <Plus size={18} />
+                                <input type="file" accept="image/*" style={{ display: 'none' }}
+                                  onChange={e => {
+                                    const file = e.target.files?.[0]; if (!file) return
+                                    const reader = new FileReader()
+                                    reader.onload = ev => setEditProduct(prev => ({
+                                      ...prev, pendingImages: [...(prev.pendingImages || []), ev.target.result]
+                                    }))
+                                    reader.readAsDataURL(file)
+                                  }} />
+                              </label>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="admin-actions">
@@ -917,32 +1123,148 @@ function App() {
             <div className="admin-section">
               <h3>Додај нов производ</h3>
               <form onSubmit={addProduct} className="admin-form">
-                <div className="admin-grid">
-                  {availableLanguages.map(lang => (
-                    <div key={lang.code} className="admin-group">
-                      <label>Назив ({lang.label})</label>
-                      <input value={newProduct.name[lang.code]} onChange={e => handleNewProductChange(`name.${lang.code}`, e.target.value)} />
-                      <label>Опис ({lang.label})</label>
-                      <textarea value={newProduct.description[lang.code]} onChange={e => handleNewProductChange(`description.${lang.code}`, e.target.value)} />
+                <div className="add-product-4col">
+
+                  {/* Col 1: МК + EN */}
+                  <div className="add-product-col">
+                    <div className="admin-group">
+                      <label>Назив (Македонски)</label>
+                      <input value={newProduct.name.mk} onChange={e => handleNewProductChange('name.mk', e.target.value)} />
+                      <label>Опис (Македонски)</label>
+                      <textarea value={newProduct.description.mk} onChange={e => handleNewProductChange('description.mk', e.target.value)} />
                     </div>
-                  ))}
-                  <div className="admin-group">
-                    <label>Категорија</label>
-                    <select value={newProduct.category} onChange={e => handleNewProductChange('category', e.target.value)}>
-                      {categoriesFlat.map(cat => (
-                        <option key={cat.id} value={cat.id}>{'   '.repeat(cat.depth)}{cat.depth > 0 ? '└ ' : ''}{cat.label}</option>
-                      ))}
-                    </select>
-                    <label>Цена</label>
-                    <input value={newProduct.price} onChange={e => handleNewProductChange('price', e.target.value)} />
-                    <label>SKU</label>
-                    <input value={newProduct.sku} onChange={e => handleNewProductChange('sku', e.target.value)} />
-                    <label>Слика</label>
-                    <input type="file" accept="image/*" onChange={e => handleImageFile(e.target.files?.[0], setNewProduct)} />
-                    {newProduct.imageData && <img src={newProduct.imageData} alt="preview" style={{ maxWidth: 160, marginTop: 8, borderRadius: 6 }} />}
+                    <div className="admin-group">
+                      <label>Назив (English)</label>
+                      <input value={newProduct.name.en} onChange={e => handleNewProductChange('name.en', e.target.value)} />
+                      <label>Опис (English)</label>
+                      <textarea value={newProduct.description.en} onChange={e => handleNewProductChange('description.en', e.target.value)} />
+                    </div>
                   </div>
+
+                  {/* Col 2: СР + АЛ */}
+                  <div className="add-product-col">
+                    <div className="admin-group">
+                      <label>Назив (Српски)</label>
+                      <input value={newProduct.name.sr} onChange={e => handleNewProductChange('name.sr', e.target.value)} />
+                      <label>Опис (Српски)</label>
+                      <textarea value={newProduct.description.sr} onChange={e => handleNewProductChange('description.sr', e.target.value)} />
+                    </div>
+                    <div className="admin-group">
+                      <label>Назив (Албански)</label>
+                      <input value={newProduct.name.sq} onChange={e => handleNewProductChange('name.sq', e.target.value)} />
+                      <label>Опис (Албански)</label>
+                      <textarea value={newProduct.description.sq} onChange={e => handleNewProductChange('description.sq', e.target.value)} />
+                    </div>
+                  </div>
+
+                  {/* Col 3: Категорија + Цена + SKU + Слики */}
+                  <div className="add-product-col">
+                    <div className="admin-group">
+                      <label>Категорија</label>
+                      <select value={newProduct.category} onChange={e => handleNewProductChange('category', e.target.value)}>
+                        {categoriesFlat.map(cat => (
+                          <option key={cat.id} value={cat.id}>{'   '.repeat(cat.depth)}{cat.depth > 0 ? '└ ' : ''}{cat.label}</option>
+                        ))}
+                      </select>
+                      <label>Цена</label>
+                      <input value={newProduct.price} onChange={e => handleNewProductChange('price', e.target.value)} />
+                      <label>Шифра</label>
+                      <input value={newProduct.sku} onChange={e => handleNewProductChange('sku', e.target.value)} />
+                      <label>Слики (до 3)</label>
+                      <div className="img-gallery-slots">
+                        {[0, 1, 2].map(i => (
+                          <div key={i} className={`img-slot${newProduct.images[i] ? ' img-slot--filled' : ''}`}>
+                            {newProduct.images[i] ? (
+                              <>
+                                <img src={newProduct.images[i]} alt={`Слика ${i + 1}`} />
+                                {i === 0 && <span className="img-slot__badge">Главна</span>}
+                                <button type="button" className="img-slot__remove"
+                                  onClick={() => setNewProduct(prev => {
+                                    const imgs = [...prev.images]; imgs[i] = ''; return { ...prev, images: imgs }
+                                  })}>
+                                  <X size={11} />
+                                </button>
+                              </>
+                            ) : (
+                              <label className="img-slot__upload">
+                                <Plus size={18} />
+                                <input type="file" accept="image/*" style={{ display: 'none' }}
+                                  onChange={e => {
+                                    const file = e.target.files?.[0]; if (!file) return
+                                    const reader = new FileReader()
+                                    reader.onload = ev => setNewProduct(prev => {
+                                      const imgs = [...prev.images]; imgs[i] = ev.target.result; return { ...prev, images: imgs }
+                                    })
+                                    reader.readAsDataURL(file)
+                                  }} />
+                              </label>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Col 4: Stock fields */}
+                  <div className="add-product-col">
+                    <div className="admin-group">
+                      <label>Датум</label>
+                      <input
+                        type="date"
+                        value={newProduct.stock_date}
+                        onChange={e => setNewProduct(p => ({ ...p, stock_date: e.target.value }))}
+                      />
+                      <div className="add-product-stock-row">
+                        <div>
+                          <label>Влез</label>
+                          <div className="admin-stock-stepper">
+                            <button type="button" className="admin-stock-stepper__btn"
+                              onClick={() => setNewProduct(p => ({ ...p, stock: String(Math.max(0, Number(p.stock) - 1)) }))}>
+                              <Minus size={13} />
+                            </button>
+                            <input type="number" min="0" value={newProduct.stock}
+                              onChange={e => setNewProduct(p => ({ ...p, stock: e.target.value }))} />
+                            <button type="button" className="admin-stock-stepper__btn"
+                              onClick={() => setNewProduct(p => ({ ...p, stock: String(Number(p.stock) + 1) }))}>
+                              <Plus size={13} />
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <label>Критична залиха</label>
+                          <div className="admin-stock-stepper">
+                            <button type="button" className="admin-stock-stepper__btn"
+                              onClick={() => setNewProduct(p => ({ ...p, critical_stock: String(Math.max(0, Number(p.critical_stock) - 1)) }))}>
+                              <Minus size={13} />
+                            </button>
+                            <input type="number" min="0" value={newProduct.critical_stock}
+                              onChange={e => setNewProduct(p => ({ ...p, critical_stock: e.target.value }))} />
+                            <button type="button" className="admin-stock-stepper__btn"
+                              onClick={() => setNewProduct(p => ({ ...p, critical_stock: String(Number(p.critical_stock) + 1) }))}>
+                              <Plus size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <label>Набавувач</label>
+                      <input
+                        type="text"
+                        value={newProduct.stock_party}
+                        onChange={e => setNewProduct(p => ({ ...p, stock_party: e.target.value }))}
+                        placeholder="Назив на набавувач..."
+                      />
+                      <label>Забелешка <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(незадолжително)</span></label>
+                      <textarea
+                        value={newProduct.stock_note}
+                        onChange={e => setNewProduct(p => ({ ...p, stock_note: e.target.value }))}
+                        placeholder="Дополнителни информации..."
+                        rows={2}
+                      />
+                    </div>
+                  </div>
+
                 </div>
-                <div className="admin-actions">
+                <div className="admin-actions admin-actions--right">
                   <button type="submit">Додај производ</button>
                 </div>
               </form>
@@ -967,6 +1289,8 @@ function App() {
                 </div>
               </div>
             </div>
+          )}
+          </div>
           )}
         </section>
       )}
@@ -1008,6 +1332,25 @@ function App() {
             <span className="catalog-controls__results">
               {loading ? '' : `${filteredProducts.length} производ${filteredProducts.length === 1 ? '' : 'и'}`}
             </span>
+            {isAdmin && adminOpen && (
+              <div className="admin-stock-filters">
+                {[
+                  { key: 'all',      label: 'Сите производи' },
+                  { key: 'critical', label: 'Критична залиха' },
+                  { key: 'out',      label: 'Нема на залиха' },
+                  { key: 'ordered',  label: 'Нарачано' },
+                ].map(f => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    className={`admin-stock-filter-btn${adminStockFilter === f.key ? ' active' : ''} filter--${f.key}`}
+                    onClick={() => setAdminStockFilter(f.key)}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {loading ? (
@@ -1026,76 +1369,143 @@ function App() {
             </div>
           ) : (
             <div className="product-grid">
-              {filteredProducts.map(product => (
-                <article
-                  key={product.id}
-                  className={`product-card${authUser?.role === 'admin' && adminOpen ? ' admin-draggable' : ''}${dropProductTarget.id === product.id ? ` drop-prod-${dropProductTarget.position}` : ''}`}
-                  draggable={!!(authUser?.role === 'admin' && adminOpen)}
-                  onDragStart={authUser?.role === 'admin' && adminOpen ? e => handleProdDragStart(e, product.id) : undefined}
-                  onDragOver={authUser?.role === 'admin' && adminOpen ? e => handleProdDragOver(e, product.id) : undefined}
-                  onDrop={authUser?.role === 'admin' && adminOpen ? e => handleProdDrop(e, product.id) : undefined}
-                  onDragEnd={authUser?.role === 'admin' && adminOpen ? handleProdDragEnd : undefined}
-                >
-                  {/* Image */}
-                  <div className="product-image product-image--clickable" onClick={() => setSelectedProduct(product)}>
-                    <img
-                      src={product.image_url || `https://via.placeholder.com/320x240/F7FAFC/A0AEC0?text=${encodeURIComponent(product.sku)}`}
-                      alt={product.name[language]}
-                    />
-                    {!isInStock(product) && (
-                      <div className="product-image__out-of-stock">Нема залиха</div>
-                    )}
-                  </div>
-
-                  {/* Body */}
-                  <div className="product-details">
-                    {/* Category breadcrumb */}
-                    <div className="product-category">
-                      {(() => {
-                        const chain = getCategoryChain(product.category)
-                        const padded = chain.length >= 2 ? chain : [...chain, ...Array(2 - chain.length).fill('')]
-                        return padded.map((name, i) => (
-                          <span key={i} className={name === '' ? 'cat-placeholder' : ''}>{name || ' '}</span>
-                        ))
-                      })()}
+              {filteredProducts.map(product => {
+                const isAdmin = authUser?.role === 'admin'
+                const isCritical = isAdmin && adminOpen && isCriticalStock(product)
+                const isOrdered = isAdmin && adminOpen && pendingOrderProductIds.has(product.id)
+                const cardQty = cardQuantities[product.id] ?? 1
+                return (
+                  <article
+                    key={product.id}
+                    className={`product-card${isAdmin && adminOpen ? ' admin-draggable' : ''}${dropProductTarget.id === product.id ? ` drop-prod-${dropProductTarget.position}` : ''}${isCritical ? ' product-card--critical' : ''}${isOrdered ? ' product-card--ordered' : ''}`}
+                    draggable={!!(isAdmin && adminOpen)}
+                    onDragStart={isAdmin && adminOpen ? e => handleProdDragStart(e, product.id) : undefined}
+                    onDragOver={isAdmin && adminOpen ? e => handleProdDragOver(e, product.id) : undefined}
+                    onDrop={isAdmin && adminOpen ? e => handleProdDrop(e, product.id) : undefined}
+                    onDragEnd={isAdmin && adminOpen ? handleProdDragEnd : undefined}
+                  >
+                    {/* Image */}
+                    <div className="product-image product-image--clickable" onClick={() => { if (!isAdmin) setSelectedProduct(product) }}>
+                      <img
+                        src={product.image_url || `https://via.placeholder.com/320x240/F7FAFC/A0AEC0?text=${encodeURIComponent(product.sku)}`}
+                        alt={product.name[language]}
+                      />
+                      {!isInStock(product) && (
+                        <div className="product-image__out-of-stock">Нема залиха</div>
+                      )}
+                      {isOrdered && (
+                        <div className="product-image__ordered-badge">
+                          Нарачано
+                        </div>
+                      )}
+                      {isCritical && (
+                        <div className="product-image__critical-badge">
+                          <AlertTriangle size={10} /> Критична залиха
+                        </div>
+                      )}
                     </div>
 
-                    {/* Name */}
-                    <h2 className="product-name--clickable" onClick={() => setSelectedProduct(product)}>
-                      {product.name[language]}
-                    </h2>
-
-                    {/* SKU + stock */}
-                    <div className="product-meta-row">
-                      <span className="product-sku">{product.sku}</span>
-                      <StockBadge product={product} />
-                    </div>
-
-                    {/* Price */}
-                    <div className="product-meta">
-                      <strong className="product-price">{product.price.toFixed(2)} €</strong>
-                    </div>
-
-                    {/* Add to cart */}
-                    <button
-                      type="button"
-                      onClick={() => addToCart(product.id)}
-                      disabled={!isInStock(product)}
-                    >
-                      <ShoppingCart size={13} />
-                      {locale.addToCart}
-                    </button>
-
-                    {/* Admin actions */}
-                    {adminOpen && authUser?.role === 'admin' && (
-                      <div className="product-admin-actions">
-                        <button type="button" className="btn-edit-sm" onClick={() => startEditProduct(product)}>Уреди</button>
-                        <button type="button" className="btn-delete-sm" onClick={() => deleteProduct(product.id)}>Избриши</button>
+                    {/* Body */}
+                    <div className="product-details">
+                      {/* Category breadcrumb */}
+                      <div className="product-category">
+                        {(() => {
+                          const chain = getCategoryChain(product.category)
+                          const padded = chain.length >= 2 ? chain : [...chain, ...Array(2 - chain.length).fill('')]
+                          return padded.map((name, i) => (
+                            <span key={i} className={name === '' ? 'cat-placeholder' : ''}>{name || ' '}</span>
+                          ))
+                        })()}
                       </div>
-                    )}
-                  </div>
-                </article>
-              ))}
+
+                      {/* Name */}
+                      <h2 className="product-name--clickable" onClick={() => { if (!isAdmin) setSelectedProduct(product) }}>
+                        {product.name[language]}
+                      </h2>
+
+                      {/* SKU + stock (залиха само за admin) */}
+                      <div className="product-meta-row">
+                        <span className="product-sku">{product.sku}</span>
+                        {isAdmin && <StockBadge product={product} critical={isCritical} />}
+                      </div>
+
+                      {/* Price + compact qty stepper inline */}
+                      <div className="product-meta">
+                        <strong className="product-price">{product.price.toFixed(2)} €</strong>
+                        {!isAdmin && isInStock(product) && (
+                          <div className="card-qty card-qty--sm">
+                            <button
+                              type="button"
+                              className="card-qty__btn"
+                              onClick={() => setCardQuantities(prev => ({ ...prev, [product.id]: Math.max(1, (prev[product.id] ?? 1) - 1) }))}
+                            >
+                              <Minus size={10} />
+                            </button>
+                            <input
+                              type="number"
+                              min="1"
+                              value={cardQty}
+                              onChange={e => setCardQuantities(prev => ({ ...prev, [product.id]: Math.max(1, Number(e.target.value) || 1) }))}
+                            />
+                            <button
+                              type="button"
+                              className="card-qty__btn"
+                              onClick={() => setCardQuantities(prev => ({ ...prev, [product.id]: (prev[product.id] ?? 1) + 1 }))}
+                            >
+                              <Plus size={10} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Admin: Влез / Излез | User: Додади во кошничка */}
+                      {isAdmin ? (
+                        <div className="admin-stock-btns">
+                          <button type="button" className="btn-stock-in" onClick={() => openStockModal('in', product)}>
+                            <ArrowDownCircle size={13} /> Влез
+                          </button>
+                          <button type="button" className="btn-stock-out" onClick={() => openStockModal('out', product)} disabled={!isInStock(product)}>
+                            <ArrowUpCircle size={13} /> Излез
+                          </button>
+                          <button type="button" className="btn-stock-history" onClick={() => openStockHistory(product)} title="Историја на движења">
+                            <History size={13} />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            addToCart(product.id, cardQty)
+                            if (isInStock(product)) setCardQuantities(prev => ({ ...prev, [product.id]: 1 }))
+                          }}
+                          disabled={!isInStock(product)}
+                        >
+                          {isInStock(product) ? (
+                            <><ShoppingCart size={13} />{locale.addToCart}</>
+                          ) : (
+                            <><XCircle size={13} />Нема на залиха</>
+                          )}
+                        </button>
+                      )}
+
+                      {/* Admin actions */}
+                      {adminOpen && isAdmin && (
+                        <div className="product-admin-actions">
+                          <button type="button" className="btn-edit-sm" onClick={() => startEditProduct(product)}>Уреди</button>
+                          <button type="button" className="btn-delete-sm" onClick={() => { if (window.confirm(`Сигурно сакате да го избришете „${product.name.mk || product.sku}"?`)) deleteProduct(product.id) }}>Избриши</button>
+                          <button
+                            type="button"
+                            className={`btn-ordered-sm${isOrdered ? ' btn-ordered-sm--active' : ''}`}
+                            onClick={() => toggleManualOrdered(product.id)}
+                          >
+                            {isOrdered ? 'Нарачано ✕' : 'Нарачано'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                )
+              })}
 
               {filteredProducts.length === 0 && (
                 <div className="empty-state">
@@ -1341,13 +1751,41 @@ function App() {
           <div className="product-modal" onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setSelectedProduct(null)}><X size={14} /></button>
 
-            {/* Image */}
-            <div className="modal-image">
-              <img
-                src={selectedProduct.image_url || `https://via.placeholder.com/600x480/F7FAFC/A0AEC0?text=${encodeURIComponent(selectedProduct.sku)}`}
-                alt={selectedProduct.name[language]}
-              />
-            </div>
+            {/* Image carousel */}
+            {(() => {
+              const imgs = selectedProduct.images?.length
+                ? selectedProduct.images
+                : [{ id: 0, url: selectedProduct.image_url || null }]
+              const hasMany = imgs.length > 1
+              const src = imgs[carouselIdx]?.url || `https://via.placeholder.com/600x480/F7FAFC/A0AEC0?text=${encodeURIComponent(selectedProduct.sku)}`
+              return (
+                <div className="modal-image modal-carousel">
+                  {hasMany && (
+                    <button className="carousel-btn carousel-btn--prev"
+                      onClick={e => { e.stopPropagation(); setCarouselIdx(i => (i - 1 + imgs.length) % imgs.length) }}>
+                      <ChevronLeft size={18} />
+                    </button>
+                  )}
+                  <img src={src} alt={selectedProduct.name[language]} />
+                  {hasMany && (
+                    <button className="carousel-btn carousel-btn--next"
+                      onClick={e => { e.stopPropagation(); setCarouselIdx(i => (i + 1) % imgs.length) }}>
+                      <ChevronRight size={18} />
+                    </button>
+                  )}
+                  {hasMany && (
+                    <div className="carousel-dots">
+                      {imgs.map((_, i) => (
+                        <button key={i}
+                          className={`carousel-dot${i === carouselIdx ? ' carousel-dot--active' : ''}`}
+                          onClick={e => { e.stopPropagation(); setCarouselIdx(i) }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Details */}
             <div className="modal-details">
@@ -1376,12 +1814,14 @@ function App() {
                   <div className="modal-specs__label">Категорија</div>
                   <div className="modal-specs__value">{getCategoryChain(selectedProduct.category).join(' › ')}</div>
                 </div>
-                <div className="modal-specs__row">
-                  <div className="modal-specs__label">На залиха</div>
-                  <div className="modal-specs__value">
-                    <StockBadge product={selectedProduct} />
+                {isAdmin && (
+                  <div className="modal-specs__row">
+                    <div className="modal-specs__label">На залиха</div>
+                    <div className="modal-specs__value">
+                      <StockBadge product={selectedProduct} />
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Price + stock */}
@@ -1395,14 +1835,38 @@ function App() {
               </div>
 
               {/* CTA */}
-              <button
-                type="button"
-                disabled={!isInStock(selectedProduct)}
-                onClick={() => { addToCart(selectedProduct.id); setSelectedProduct(null) }}
-              >
-                <ShoppingCart size={16} />
-                {locale.addToCart}
-              </button>
+              {!isAdmin ? (
+                <div className="modal-cta-row">
+                  {isInStock(selectedProduct) && (
+                    <div className="card-qty card-qty--sm card-qty--md">
+                      <button type="button" className="card-qty__btn"
+                        onClick={() => setModalQty(q => Math.max(1, q - 1))}>
+                        <Minus size={12} />
+                      </button>
+                      <input type="number" min="1" value={modalQty}
+                        onChange={e => setModalQty(Math.max(1, Number(e.target.value) || 1))}
+                      />
+                      <button type="button" className="card-qty__btn"
+                        onClick={() => setModalQty(q => q + 1)}>
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    disabled={!isInStock(selectedProduct)}
+                    onClick={() => { addToCart(selectedProduct.id, modalQty); setSelectedProduct(null) }}
+                  >
+                    <ShoppingCart size={16} />
+                    {locale.addToCart}
+                  </button>
+                </div>
+              ) : (
+                <button type="button" disabled>
+                  <ShoppingCart size={16} />
+                  {locale.addToCart}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1426,17 +1890,45 @@ function App() {
               {/* Left: image + key fields */}
               <div className="edit-modal__left">
 
-                {/* Image preview */}
-                <div className="edit-modal__image-box">
-                  <img
-                    src={editProduct.imageData || editProduct.image_url || `https://via.placeholder.com/280x200/F7FAFC/A0AEC0?text=${encodeURIComponent(editProduct.sku)}`}
-                    alt="preview"
-                  />
-                  <label className="edit-modal__image-upload">
-                    Промени слика
-                    <input type="file" accept="image/*" style={{ display: 'none' }}
-                      onChange={e => handleImageFile(e.target.files?.[0], setEditProduct)} />
-                  </label>
+                {/* Image gallery */}
+                <div className="edit-modal__field">
+                  <label>Слики (до 3)</label>
+                  <div className="img-gallery-slots">
+                    {(editProduct.images || []).map((img, i) => (
+                      <div key={img.id} className="img-slot img-slot--filled">
+                        <img src={img.url} alt={`Слика ${i + 1}`} />
+                        {i === 0 && <span className="img-slot__badge">Главна</span>}
+                        <button type="button" className="img-slot__remove" onClick={() => deleteEditImage(img.id)}>
+                          <X size={11} />
+                        </button>
+                      </div>
+                    ))}
+                    {(editProduct.pendingImages || []).map((imgData, i) => (
+                      <div key={`p${i}`} className="img-slot img-slot--filled">
+                        <img src={imgData} alt="нова" />
+                        <button type="button" className="img-slot__remove"
+                          onClick={() => setEditProduct(prev => ({ ...prev, pendingImages: prev.pendingImages.filter((_, j) => j !== i) }))}>
+                          <X size={11} />
+                        </button>
+                      </div>
+                    ))}
+                    {((editProduct.images?.length || 0) + (editProduct.pendingImages?.length || 0)) < 3 && (
+                      <div className="img-slot">
+                        <label className="img-slot__upload">
+                          <Plus size={18} />
+                          <input type="file" accept="image/*" style={{ display: 'none' }}
+                            onChange={e => {
+                              const file = e.target.files?.[0]; if (!file) return
+                              const reader = new FileReader()
+                              reader.onload = ev => setEditProduct(prev => ({
+                                ...prev, pendingImages: [...(prev.pendingImages || []), ev.target.result]
+                              }))
+                              reader.readAsDataURL(file)
+                            }} />
+                        </label>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* SKU */}
@@ -1505,6 +1997,38 @@ function App() {
                       : `✓ Достапно — ${editProduct.stock} ед.`}
                   </span>
                 </div>
+
+                {/* Critical Stock */}
+                <div className="edit-modal__field">
+                  <label>Критична залиха</label>
+                  <div className="edit-stock-stepper">
+                    <button
+                      type="button"
+                      className="edit-stock-stepper__btn"
+                      onClick={() => setEditProduct(p => ({ ...p, critical_stock: String(Math.max(0, Number(p.critical_stock ?? 0) - 1)) }))}
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <input
+                      type="number"
+                      min="0"
+                      value={editProduct.critical_stock ?? 0}
+                      onChange={e => setEditProduct(p => ({ ...p, critical_stock: e.target.value }))}
+                    />
+                    <button
+                      type="button"
+                      className="edit-stock-stepper__btn"
+                      onClick={() => setEditProduct(p => ({ ...p, critical_stock: String(Number(p.critical_stock ?? 0) + 1) }))}
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <span className="edit-stock-stepper__hint edit-stock-stepper__hint--warn">
+                    {Number(editProduct.critical_stock ?? 0) === 0
+                      ? '— Без предупредување'
+                      : `⚠ Предупредување при ≤ ${editProduct.critical_stock} ед.`}
+                  </span>
+                </div>
               </div>
 
               {/* Right: name per language */}
@@ -1552,6 +2076,129 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Stock movement modal (Влез / Излез) ── */}
+      {stockModal && (
+        <div className="product-modal-overlay" onClick={() => setStockModal(null)}>
+          <div className="stock-modal" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setStockModal(null)}><X size={14} /></button>
+
+            <div className={`stock-modal__header stock-modal__header--${stockModal.type}`}>
+              {stockModal.type === 'in'
+                ? <><ArrowDownCircle size={20} /> Влез на залиха</>
+                : <><ArrowUpCircle size={20} /> Излез на залиха</>}
+            </div>
+
+            <div className="stock-modal__product">
+              <span className="product-sku">{stockModal.product.sku}</span>
+              <strong>{stockModal.product.name[language]}</strong>
+              <span className="stock-modal__current">
+                Тековна залиха: <strong>{stockModal.product.stock} ед.</strong>
+              </span>
+            </div>
+
+            <form onSubmit={submitStockMovement} className="stock-modal__form">
+              <div className="stock-modal__field">
+                <label>Датум</label>
+                <input
+                  type="date"
+                  value={stockForm.date}
+                  onChange={e => setStockForm(p => ({ ...p, date: e.target.value }))}
+                  required
+                />
+              </div>
+
+              <div className="stock-modal__field">
+                <label>Количина</label>
+                <div className="edit-stock-stepper">
+                  <button type="button" className="edit-stock-stepper__btn"
+                    onClick={() => setStockForm(p => ({ ...p, quantity: String(Math.max(1, Number(p.quantity) - 1)) }))}>
+                    <Minus size={14} />
+                  </button>
+                  <input
+                    type="number"
+                    min="1"
+                    value={stockForm.quantity}
+                    onChange={e => setStockForm(p => ({ ...p, quantity: e.target.value }))}
+                    required
+                  />
+                  <button type="button" className="edit-stock-stepper__btn"
+                    onClick={() => setStockForm(p => ({ ...p, quantity: String(Number(p.quantity) + 1) }))}>
+                    <Plus size={14} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="stock-modal__field">
+                <label>{stockModal.type === 'in' ? 'Набавувач' : 'Купувач / Примач'}</label>
+                <input
+                  type="text"
+                  value={stockForm.party}
+                  onChange={e => setStockForm(p => ({ ...p, party: e.target.value }))}
+                  placeholder={stockModal.type === 'in' ? 'Назив на набавувач...' : 'Назив на купувач / примач...'}
+                />
+              </div>
+
+              <div className="stock-modal__field">
+                <label>Забелешка <span style={{ fontWeight: 400, textTransform: 'none' }}>(незадолжително)</span></label>
+                <textarea
+                  rows={2}
+                  value={stockForm.note}
+                  onChange={e => setStockForm(p => ({ ...p, note: e.target.value }))}
+                  placeholder="Дополнителни информации..."
+                />
+              </div>
+
+              <div className="stock-modal__actions">
+                <button type="submit" className={stockModal.type === 'in' ? 'btn-stock-submit-in' : 'btn-stock-submit-out'}>
+                  {stockModal.type === 'in' ? <><ArrowDownCircle size={14} /> Внеси влез</> : <><ArrowUpCircle size={14} /> Внеси излез</>}
+                </button>
+                <button type="button" className="btn-cancel" onClick={() => setStockModal(null)}>Откажи</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Stock history modal ── */}
+      {stockHistory && (
+        <div className="product-modal-overlay" onClick={() => setStockHistory(null)}>
+          <div className="stock-history-modal" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setStockHistory(null)}><X size={14} /></button>
+            <div className="stock-history-modal__header">
+              <History size={17} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{stockHistory.name[language]}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{stockHistory.sku} · Тековно: <strong>{stockHistory.stock} ед.</strong></div>
+              </div>
+            </div>
+
+            {stockHistoryData.length === 0 ? (
+              <div className="empty-state" style={{ border: 'none', padding: '28px 0' }}>
+                <Package size={32} strokeWidth={1.2} style={{ color: 'var(--steel-300)' }} />
+                <p>Нема евиденција на движења.</p>
+              </div>
+            ) : (
+              <div className="stock-history-list">
+                {stockHistoryData.map(row => (
+                  <div key={row.id} className={`stock-history-row stock-history-row--${row.type}`}>
+                    <div className={`stock-history-type stock-history-type--${row.type}`}>
+                      {row.type === 'in' ? <ArrowDownCircle size={14} /> : <ArrowUpCircle size={14} />}
+                      {row.type === 'in' ? 'Влез' : 'Излез'}
+                    </div>
+                    <div className="stock-history-qty">
+                      {row.type === 'in' ? '+' : '−'}{row.quantity} ед.
+                    </div>
+                    <div className="stock-history-date">{row.movement_date}</div>
+                    <div className="stock-history-party">{row.party || '—'}</div>
+                    {row.note && <div className="stock-history-note">{row.note}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

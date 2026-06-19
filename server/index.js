@@ -112,6 +112,25 @@ try {
   await runAsync('ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0')
 } catch { /* column already exists */ }
 
+// Migration: add critical_stock to products
+try {
+  await runAsync('ALTER TABLE products ADD COLUMN critical_stock INTEGER DEFAULT 0')
+} catch { /* column already exists */ }
+
+await runAsync(`
+  CREATE TABLE IF NOT EXISTS stock_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER,
+    type TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    party TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    movement_date TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+  );
+`)
+
 await runAsync(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,7 +235,7 @@ const getAllDescendantKeys = async (key) => {
 
 const buildProduct = async (productRow) => {
   const translations = await allAsync('SELECT lang, name, description FROM product_translations WHERE product_id = ?', [productRow.id])
-  const image = await getAsync('SELECT url FROM images WHERE product_id = ? AND is_primary = 1 LIMIT 1', [productRow.id])
+  const allImages = await allAsync('SELECT id, url FROM images WHERE product_id = ? ORDER BY is_primary DESC, id DESC LIMIT 3', [productRow.id])
   const inventory = await getAsync('SELECT quantity FROM inventory WHERE product_id = ?', [productRow.id])
 
   const result = {
@@ -224,10 +243,12 @@ const buildProduct = async (productRow) => {
     sku: productRow.sku,
     category: productRow.category,
     price: productRow.price,
-    image_url: image?.url || null,
+    image_url: allImages[0]?.url || null,
+    images: allImages,
     name: {},
     description: {},
     stock: inventory?.quantity ?? 0,
+    critical_stock: productRow.critical_stock ?? 0,
   }
 
   translations.forEach((entry) => {
@@ -418,12 +439,12 @@ app.get('/api/products/:id', async (req, res) => {
 
 app.post('/api/products', requireAdmin, async (req, res) => {
   try {
-    const { sku, category, price, name, description, imageData } = req.body
+    const { sku, category, price, name, description, imageData, critical_stock } = req.body
     if (!sku || !category || !name || !description) {
       return res.status(400).json({ error: 'Missing required product fields' })
     }
 
-    const insert = await runAsync('INSERT INTO products (sku, category, price) VALUES (?, ?, ?)', [sku, category, Number(price) || 0])
+    const insert = await runAsync('INSERT INTO products (sku, category, price, critical_stock) VALUES (?, ?, ?, ?)', [sku, category, Number(price) || 0, Number(critical_stock) || 0])
     const productId = insert.lastID
     const insertTranslation = 'INSERT INTO product_translations (product_id, lang, name, description) VALUES (?, ?, ?, ?)'
 
@@ -447,7 +468,7 @@ app.post('/api/products', requireAdmin, async (req, res) => {
 app.put('/api/products/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params
-    const { category, price, sku, name, description, imageData } = req.body
+    const { category, price, sku, name, description, imageData, critical_stock } = req.body
     const existing = await getAsync('SELECT * FROM products WHERE id = ?', [id])
     if (!existing) return res.status(404).json({ error: 'Product not found' })
 
@@ -457,9 +478,11 @@ app.put('/api/products/:id', requireAdmin, async (req, res) => {
       if (conflict) return res.status(409).json({ error: `SKU "${newSku}" веќе постои.` })
     }
 
+    const newCriticalStock = critical_stock !== undefined ? Number(critical_stock) : (existing.critical_stock ?? 0)
+
     await runAsync(
-      'UPDATE products SET sku=?, category=?, price=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
-      [newSku, category ?? existing.category, Number(price) ?? existing.price, id],
+      'UPDATE products SET sku=?, category=?, price=?, critical_stock=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+      [newSku, category ?? existing.category, Number(price) ?? existing.price, newCriticalStock, id],
     )
 
     if (name || description) {
@@ -526,6 +549,107 @@ app.post('/api/inventory', async (req, res) => {
     if (!product) return res.status(404).json({ error: 'Product not found' })
     await runAsync('INSERT OR REPLACE INTO inventory (product_id, quantity, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)', [product.id, Number(quantity) || 0])
     res.json({ product_id: product.id, sku: product.sku, quantity: Number(quantity) || 0 })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Image management ──────────────────────────────────────────────────────────
+
+app.delete('/api/products/:id/images/:imageId', requireAdmin, async (req, res) => {
+  try {
+    const { id, imageId } = req.params
+    const img = await getAsync('SELECT id, is_primary FROM images WHERE id = ? AND product_id = ?', [imageId, id])
+    if (!img) return res.status(404).json({ error: 'Сликата не е пронајдена.' })
+    await runAsync('DELETE FROM images WHERE id = ?', [imageId])
+    if (img.is_primary) {
+      await runAsync('UPDATE images SET is_primary = 1 WHERE product_id = ? ORDER BY id DESC LIMIT 1', [id])
+    }
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/products/:id/images', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    const { imageData } = req.body
+    if (!imageData) return res.status(400).json({ error: 'imageData е задолжително' })
+    const count = await getAsync('SELECT COUNT(*) as cnt FROM images WHERE product_id = ?', [id])
+    if (count.cnt >= 3) return res.status(409).json({ error: 'Максимум 3 слики по производ.' })
+    const url = saveImageFromData(id, imageData)
+    if (!url) return res.status(400).json({ error: 'Неважечки imageData.' })
+    // Make sure only the first image is primary
+    const primaryExists = await getAsync('SELECT id FROM images WHERE product_id = ? AND is_primary = 1', [id])
+    if (!primaryExists) {
+      await runAsync('UPDATE images SET is_primary = 1 WHERE product_id = ? ORDER BY id ASC LIMIT 1', [id])
+    } else {
+      await runAsync('UPDATE images SET is_primary = 0 WHERE product_id = ? AND url = ?', [id, url])
+    }
+    const newImg = await getAsync('SELECT id, url FROM images WHERE product_id = ? AND url = ?', [id, url])
+    res.status(201).json(newImg)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Stock movements ───────────────────────────────────────────────────────────
+
+app.post('/api/stock/in', requireAdmin, async (req, res) => {
+  try {
+    const { product_id, quantity, party, note, date } = req.body
+    if (!product_id || !quantity || quantity < 1) return res.status(400).json({ error: 'Задолжителни: product_id и quantity >= 1' })
+    const product = await getAsync('SELECT id FROM products WHERE id = ?', [product_id])
+    if (!product) return res.status(404).json({ error: 'Производот не е пронајден' })
+    const qty = Number(quantity)
+    await runAsync(
+      'INSERT INTO stock_movements (product_id, type, quantity, party, note, movement_date) VALUES (?, ?, ?, ?, ?, ?)',
+      [product_id, 'in', qty, party || '', note || '', date || new Date().toISOString().split('T')[0]],
+    )
+    await runAsync(
+      'INSERT OR REPLACE INTO inventory (product_id, quantity, updated_at) VALUES (?, COALESCE((SELECT quantity FROM inventory WHERE product_id = ?), 0) + ?, CURRENT_TIMESTAMP)',
+      [product_id, product_id, qty],
+    )
+    const inv = await getAsync('SELECT quantity FROM inventory WHERE product_id = ?', [product_id])
+    res.json({ success: true, new_quantity: inv?.quantity ?? 0 })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/stock/out', requireAdmin, async (req, res) => {
+  try {
+    const { product_id, quantity, party, note, date } = req.body
+    if (!product_id || !quantity || quantity < 1) return res.status(400).json({ error: 'Задолжителни: product_id и quantity >= 1' })
+    const product = await getAsync('SELECT id FROM products WHERE id = ?', [product_id])
+    if (!product) return res.status(404).json({ error: 'Производот не е пронајден' })
+    const qty = Number(quantity)
+    const inv = await getAsync('SELECT quantity FROM inventory WHERE product_id = ?', [product_id])
+    const current = inv?.quantity ?? 0
+    if (current < qty) return res.status(409).json({ error: `Нема доволно залиха. Достапно: ${current} ед.` })
+    await runAsync(
+      'INSERT INTO stock_movements (product_id, type, quantity, party, note, movement_date) VALUES (?, ?, ?, ?, ?, ?)',
+      [product_id, 'out', qty, party || '', note || '', date || new Date().toISOString().split('T')[0]],
+    )
+    await runAsync(
+      'UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
+      [qty, product_id],
+    )
+    const updated = await getAsync('SELECT quantity FROM inventory WHERE product_id = ?', [product_id])
+    res.json({ success: true, new_quantity: updated?.quantity ?? 0 })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/stock/:product_id', requireAdmin, async (req, res) => {
+  try {
+    const rows = await allAsync(
+      'SELECT * FROM stock_movements WHERE product_id = ? ORDER BY movement_date DESC, id DESC',
+      [req.params.product_id],
+    )
+    res.json(rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
