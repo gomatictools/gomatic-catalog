@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search, ShoppingCart, X, Package, CheckCircle2, XCircle,
   Settings, ClipboardList, ChevronLeft, ChevronRight, Truck, LogOut, User,
-  Plus, Minus, Tag, AlertTriangle, ArrowDownCircle, ArrowUpCircle, History
+  Plus, Minus, Tag, AlertTriangle, ArrowDownCircle, ArrowUpCircle, History,
+  LayoutGrid, AlignJustify
 } from 'lucide-react'
 import './App.css'
 import { translations } from './data'
@@ -71,7 +72,7 @@ function App() {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth_token'))
   const [authModal, setAuthModal] = useState(null)
   const [authTab, setAuthTab] = useState('login')
-  const [authForm, setAuthForm] = useState({ email: '', name: '', password: '', confirm_password: '', company_name: '', is_private: false })
+  const [authForm, setAuthForm] = useState({ email: '', name: '', password: '', confirm_password: '', company_name: '', is_private: false, phone: '' })
   const [authError, setAuthError] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
   const [orderNote, setOrderNote] = useState('')
@@ -87,8 +88,20 @@ function App() {
   const [modalQty, setModalQty] = useState(1)
   const [myOrdersOpen, setMyOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
-  const [allOrdersOpen, setAllOrdersOpen] = useState(false)
   const [allOrders, setAllOrders] = useState([])
+  const [orderEdits, setOrderEdits] = useState({})
+  const [usersList, setUsersList] = useState([])
+  const [userEdits, setUserEdits] = useState({})
+  const [userSearch, setUserSearch] = useState('')
+  const [cartAnimKey, setCartAnimKey] = useState(0)
+  const [flashProductId, setFlashProductId] = useState(null)
+  const flashTimerRef = useRef(null)
+  const [categoriesOpen, setCategoriesOpen] = useState(false)
+  const [orderFilterDateFrom, setOrderFilterDateFrom] = useState('')
+  const [orderFilterDateTo, setOrderFilterDateTo] = useState('')
+  const [orderFilterStatus, setOrderFilterStatus] = useState('all')
+  const [orderFilterPayment, setOrderFilterPayment] = useState('all')
+  const [orderFilterUser, setOrderFilterUser] = useState('')
   const [adminStockFilter, setAdminStockFilter] = useState('all')
   const [fulfilledIds, setFulfilledIds] = useState(new Set())
   const [manualOrderedIds, setManualOrderedIds] = useState(new Set())
@@ -236,7 +249,7 @@ function App() {
   // ── Auth ──────────────────────────────────────────────────────────────────────
   const openAuthModal = (tab = 'login') => {
     setAuthTab(tab)
-    setAuthForm({ email: '', name: '', password: '', confirm_password: '', company_name: '', is_private: false })
+    setAuthForm({ email: '', name: '', password: '', confirm_password: '', company_name: '', is_private: false, phone: '' })
     setAuthError('')
     setAuthModal(true)
   }
@@ -252,7 +265,7 @@ function App() {
       const endpoint = authTab === 'login' ? '/api/auth/login' : '/api/auth/register'
       const body = authTab === 'login'
         ? { email: authForm.email, password: authForm.password }
-        : { email: authForm.email, name: authForm.name, password: authForm.password, company_name: authForm.company_name, is_private: authForm.is_private }
+        : { email: authForm.email, name: authForm.name, password: authForm.password, company_name: authForm.company_name, is_private: authForm.is_private, phone: authForm.phone }
       const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -287,8 +300,73 @@ function App() {
   const loadAllOrders = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/orders`, { headers: { Authorization: `Bearer ${authToken}` } })
-      if (res.ok) setAllOrders(await res.json())
+      if (res.ok) { setAllOrders(await res.json()); setOrderEdits({}) }
     } catch { /* silent */ }
+  }
+
+  const saveOrder = async (orderId) => {
+    const edits = orderEdits[orderId]
+    if (!edits) return
+    try {
+      await fetch(`${API_BASE}/api/orders/${orderId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(edits),
+      })
+      setAllOrders(prev => prev.map(o => o.id === orderId ? { ...o, ...edits } : o))
+      setOrderEdits(prev => { const n = { ...prev }; delete n[orderId]; return n })
+    } catch { setError('Не може да се зачува нарачката.') }
+  }
+
+  const deleteOrder = async (orderId) => {
+    if (!window.confirm(`Сигурно сакате да ја избришете нарачка #${orderId}?`)) return
+    try {
+      await fetch(`${API_BASE}/api/orders/${orderId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
+      setAllOrders(prev => prev.filter(o => o.id !== orderId))
+    } catch { setError('Не може да се избрише нарачката.') }
+  }
+
+  const getOrderField = (order, field) =>
+    orderEdits[order.id]?.[field] !== undefined ? orderEdits[order.id][field] : order[field]
+
+  const setOrderEdit = (orderId, field, value) =>
+    setOrderEdits(prev => ({ ...prev, [orderId]: { ...prev[orderId], [field]: value } }))
+
+  const loadUsers = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users`, { headers: { Authorization: `Bearer ${authToken}` } })
+      if (res.ok) { setUsersList(await res.json()); setUserEdits({}) }
+    } catch { /* silent */ }
+  }
+
+  const getUserField = (user, field) =>
+    userEdits[user.id]?.[field] !== undefined ? userEdits[user.id][field] : user[field]
+
+  const setUserEdit = (userId, field, value) =>
+    setUserEdits(prev => ({ ...prev, [userId]: { ...prev[userId], [field]: value } }))
+
+  const saveUser = async (userId) => {
+    const edits = userEdits[userId]
+    if (!edits) return
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users/${userId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(edits),
+      })
+      if (!res.ok) { const d = await res.json(); setError(d.error || 'Грешка.'); return }
+      setUsersList(prev => prev.map(u => u.id === userId ? { ...u, ...edits } : u))
+      setUserEdits(prev => { const n = { ...prev }; delete n[userId]; return n })
+    } catch { setError('Не може да се зачува корисникот.') }
+  }
+
+  const deleteUser = async (userId) => {
+    const u = usersList.find(x => x.id === userId)
+    if (!window.confirm(`Сигурно сакате да го избришете корисникот „${u?.name || u?.email}"? Ќе се избришат и неговите нарачки.`)) return
+    try {
+      await fetch(`${API_BASE}/api/admin/users/${userId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
+      setUsersList(prev => prev.filter(u => u.id !== userId))
+    } catch { setError('Не може да се избрише корисникот.') }
   }
 
   const placeOrder = async () => {
@@ -730,6 +808,29 @@ function App() {
   }
 
   // ── Derived data ──────────────────────────────────────────────────────────────
+  const filteredOrders = useMemo(() => {
+    return allOrders.filter(order => {
+      if (orderFilterStatus !== 'all' && order.status !== orderFilterStatus) return false
+      if (orderFilterPayment !== 'all' && (order.payment_status || 'unpaid') !== orderFilterPayment) return false
+      if (orderFilterUser) {
+        const q = orderFilterUser.toLowerCase()
+        const inCompany = (order.company_name || '').toLowerCase().includes(q)
+        const inName = (order.user_name || '').toLowerCase().includes(q)
+        if (!inCompany && !inName) return false
+      }
+      if (orderFilterDateFrom) {
+        const from = new Date(orderFilterDateFrom)
+        if (new Date(order.created_at) < from) return false
+      }
+      if (orderFilterDateTo) {
+        const to = new Date(orderFilterDateTo)
+        to.setHours(23, 59, 59, 999)
+        if (new Date(order.created_at) > to) return false
+      }
+      return true
+    })
+  }, [allOrders, orderFilterStatus, orderFilterPayment, orderFilterUser, orderFilterDateFrom, orderFilterDateTo])
+
   const orderedProductIds = useMemo(() => {
     const ids = new Set()
     allOrders.forEach(order => order.items?.forEach(item => ids.add(item.product_id)))
@@ -765,6 +866,27 @@ function App() {
     })
   }, [search, selectedCategory, language, productList, getDescendantKeys, adminStockFilter, orderedProductIds])
 
+  const playAddSound = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      const note = (freq, start, dur) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.type = 'sine'
+        osc.frequency.value = freq
+        gain.gain.setValueAtTime(0, start)
+        gain.gain.linearRampToValueAtTime(0.18, start + 0.01)
+        gain.gain.exponentialRampToValueAtTime(0.001, start + dur)
+        osc.start(start)
+        osc.stop(start + dur)
+      }
+      note(880,    ctx.currentTime,        0.14)
+      note(1318.5, ctx.currentTime + 0.11, 0.18)
+    } catch { /* AudioContext not supported */ }
+  }
+
   const addToCart = (productId, qty = 1) => {
     if (!authUser) { openAuthModal('login'); return }
     setCart(cur => {
@@ -772,6 +894,11 @@ function App() {
       if (item) return cur.map(e => e.productId === productId ? { ...e, quantity: e.quantity + qty } : e)
       return [...cur, { productId, quantity: qty }]
     })
+    playAddSound()
+    setCartAnimKey(k => k + 1)
+    setFlashProductId(productId)
+    clearTimeout(flashTimerRef.current)
+    flashTimerRef.current = setTimeout(() => setFlashProductId(null), 650)
   }
 
   const removeFromCart = (productId) => setCart(cur => cur.filter(e => e.productId !== productId))
@@ -923,12 +1050,7 @@ function App() {
             {authUser ? (
               <>
                 <span className="header-user-name">{authUser.name}</span>
-                {authUser.role === 'admin' ? (
-                  <button type="button" className="btn-auth-outline" onClick={() => { setAllOrdersOpen(true); loadAllOrders() }}>
-                    <ClipboardList size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
-                    Сите нарачки
-                  </button>
-                ) : (
+                {authUser.role !== 'admin' && (
                   <button type="button" className="btn-auth-outline" onClick={() => { setMyOrdersOpen(true); loadMyOrders() }}>
                     <ClipboardList size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
                     {locale.myOrders}
@@ -948,7 +1070,7 @@ function App() {
 
             {authUser?.role !== 'admin' && (
               <button type="button" className="btn-cart" onClick={() => setCartOpen(true)}>
-                <ShoppingCart size={15} />
+                <span key={cartAnimKey} className="cart-icon-bump"><ShoppingCart size={15} /></span>
                 {locale.cartTitle}
                 {totalCartQty > 0 && <span className="cart-badge">{totalCartQty}</span>}
               </button>
@@ -975,6 +1097,8 @@ function App() {
                   { key: 'categories', label: 'Додавање категории' },
                   { key: 'catalog',    label: 'Уредување на каталог' },
                   { key: 'db',         label: 'Управување со база' },
+                  { key: 'orders',     label: 'Нарачки' },
+                  { key: 'users',      label: 'Корисници' },
                 ].map(tab => (
                   <button
                     key={tab.key}
@@ -986,6 +1110,8 @@ function App() {
                       } else {
                         setAdminTab(tab.key)
                         setAdminContentOpen(true)
+                        if (tab.key === 'orders') loadAllOrders()
+                        if (tab.key === 'users') loadUsers()
                       }
                     }}
                   >
@@ -1290,6 +1416,197 @@ function App() {
               </div>
             </div>
           )}
+
+          {adminTab === 'orders' && (
+            <div className="admin-section">
+              <div className="orders-tab-header">
+                <h3>Нарачки</h3>
+                <button type="button" className="btn-sm" onClick={loadAllOrders}>Освежи</button>
+              </div>
+
+              <div className="orders-filters">
+                <input
+                  type="text"
+                  className="orders-filter-search"
+                  placeholder="Корисник или компанија…"
+                  value={orderFilterUser}
+                  onChange={e => setOrderFilterUser(e.target.value)}
+                />
+                <select className="orders-filter-select" value={orderFilterStatus} onChange={e => setOrderFilterStatus(e.target.value)}>
+                  <option value="all">Сите статуси</option>
+                  <option value="pending">Во чекање</option>
+                  <option value="ready">Спремено</option>
+                  <option value="delivered">Испорачано</option>
+                </select>
+                <select className="orders-filter-select" value={orderFilterPayment} onChange={e => setOrderFilterPayment(e.target.value)}>
+                  <option value="all">Сите плаќања</option>
+                  <option value="unpaid">Не е наплатено</option>
+                  <option value="paid">Наплатено</option>
+                </select>
+                <div className="orders-filter-dates">
+                  <input type="date" className="orders-filter-date" value={orderFilterDateFrom} onChange={e => setOrderFilterDateFrom(e.target.value)} title="Од датум" />
+                  <span className="orders-filter-date-sep">–</span>
+                  <input type="date" className="orders-filter-date" value={orderFilterDateTo} onChange={e => setOrderFilterDateTo(e.target.value)} title="До датум" />
+                </div>
+                {(orderFilterUser || orderFilterStatus !== 'all' || orderFilterPayment !== 'all' || orderFilterDateFrom || orderFilterDateTo) && (
+                  <button type="button" className="orders-filter-clear" onClick={() => { setOrderFilterUser(''); setOrderFilterStatus('all'); setOrderFilterPayment('all'); setOrderFilterDateFrom(''); setOrderFilterDateTo('') }}>✕</button>
+                )}
+                <span className="orders-filter-count">{filteredOrders.length} / {allOrders.length}</span>
+              </div>
+
+              {filteredOrders.length === 0 ? (
+                <div className="empty-state" style={{ border: 'none', padding: '32px 0' }}>
+                  <Package size={36} strokeWidth={1.2} style={{ color: 'var(--steel-300)' }} />
+                  <p>{allOrders.length === 0 ? 'Нема нарачки.' : 'Нема нарачки според избраните филтри.'}</p>
+                </div>
+              ) : (
+                <div className="orders-list">
+                  {filteredOrders.map(order => {
+                    const deliveryStatus = getOrderField(order, 'status')
+                    const paymentStatus = getOrderField(order, 'payment_status')
+                    const isDirty = !!orderEdits[order.id]
+                    return (
+                      <div key={order.id} className="order-card">
+                        <div className="order-card-header">
+                          <span className="order-id">#{order.id}</span>
+                          <span className="order-client">
+                            {order.company_name ? <strong>{order.company_name}</strong> : null}
+                            {order.company_name && order.user_name ? ' · ' : null}
+                            {order.user_name}
+                          </span>
+                          <span className="order-date">{new Date(order.created_at).toLocaleDateString()}</span>
+                          <strong className="order-total">{order.total.toFixed(2)} €</strong>
+                        </div>
+
+                        <ul className="order-items-list">
+                          {order.items.map(item => (
+                            <li key={item.id}>{item.name} × {item.quantity} — {(item.price * item.quantity).toFixed(2)} €</li>
+                          ))}
+                        </ul>
+                        {order.note && <p className="order-note-text">{order.note}</p>}
+
+                        <div className="order-controls">
+                          <div className="order-selects">
+                            <select
+                              className={`order-select order-select--delivery order-select--${deliveryStatus}`}
+                              value={deliveryStatus}
+                              onChange={e => setOrderEdit(order.id, 'status', e.target.value)}
+                            >
+                              <option value="pending">Во чекање</option>
+                              <option value="ready">Спремено</option>
+                              <option value="delivered">Испорачано</option>
+                            </select>
+                            <select
+                              className={`order-select order-select--payment order-select--${paymentStatus}`}
+                              value={paymentStatus || 'unpaid'}
+                              onChange={e => setOrderEdit(order.id, 'payment_status', e.target.value)}
+                            >
+                              <option value="unpaid">Не е наплатено</option>
+                              <option value="paid">Наплатено</option>
+                            </select>
+                          </div>
+                          <div className="order-actions">
+                            {isDirty && <button type="button" className="btn-order-save" onClick={() => saveOrder(order.id)}>Зачувај</button>}
+                            {isDirty && <button type="button" className="btn-order-cancel" onClick={() => setOrderEdits(prev => { const n = { ...prev }; delete n[order.id]; return n })}>Откажи</button>}
+                            <button type="button" className="btn-order-delete" onClick={() => deleteOrder(order.id)}>Избриши</button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {adminTab === 'users' && (
+            <div className="admin-section">
+              <div className="orders-tab-header">
+                <h3>Корисници</h3>
+                <button type="button" className="btn-sm" onClick={loadUsers}>Освежи</button>
+              </div>
+
+              <div className="users-search-bar">
+                <input
+                  type="text"
+                  className="orders-filter-search"
+                  placeholder="Пребарај по ime, компанија или е-пошта…"
+                  value={userSearch}
+                  onChange={e => setUserSearch(e.target.value)}
+                />
+                <span className="orders-filter-count">
+                  {usersList.filter(u => {
+                    const q = userSearch.toLowerCase()
+                    return !q || (u.name||'').toLowerCase().includes(q) || (u.company_name||'').toLowerCase().includes(q) || (u.email||'').toLowerCase().includes(q)
+                  }).length} / {usersList.length}
+                </span>
+              </div>
+
+              {usersList.length === 0 ? (
+                <div className="empty-state" style={{ border: 'none', padding: '32px 0' }}>
+                  <Package size={36} strokeWidth={1.2} style={{ color: 'var(--steel-300)' }} />
+                  <p>Нема корисници.</p>
+                </div>
+              ) : (
+                <div className="users-list">
+                  {usersList
+                    .filter(u => {
+                      const q = userSearch.toLowerCase()
+                      return !q || (u.name||'').toLowerCase().includes(q) || (u.company_name||'').toLowerCase().includes(q) || (u.email||'').toLowerCase().includes(q)
+                    })
+                    .map(user => {
+                      const isDirty = !!userEdits[user.id]
+                      return (
+                        <div key={user.id} className={`user-card${user.role === 'admin' ? ' user-card--admin' : ''}`}>
+                          <div className="user-card-meta">
+                            <span className="user-card-id">#{user.id}</span>
+                            <span className={`user-role-badge user-role-badge--${getUserField(user, 'role')}`}>
+                              {getUserField(user, 'role') === 'admin' ? 'Админ' : 'Корисник'}
+                            </span>
+                            <span className="user-card-date">{new Date(user.created_at).toLocaleDateString()}</span>
+                          </div>
+                          <div className="user-card-fields">
+                            <label className="user-field">
+                              <span>Ime</span>
+                              <input type="text" value={getUserField(user, 'name') || ''} onChange={e => setUserEdit(user.id, 'name', e.target.value)} />
+                            </label>
+                            <label className="user-field">
+                              <span>Компанија</span>
+                              <input type="text" value={getUserField(user, 'company_name') || ''} onChange={e => setUserEdit(user.id, 'company_name', e.target.value)} disabled={getUserField(user, 'is_private')} />
+                            </label>
+                            <label className="user-field">
+                              <span>Е-пошта</span>
+                              <input type="email" value={getUserField(user, 'email') || ''} onChange={e => setUserEdit(user.id, 'email', e.target.value)} />
+                            </label>
+                            <label className="user-field">
+                              <span>Телефон</span>
+                              <input type="text" value={getUserField(user, 'phone') || ''} onChange={e => setUserEdit(user.id, 'phone', e.target.value)} />
+                            </label>
+                            <label className="user-field user-field--inline">
+                              <input type="checkbox" checked={!!getUserField(user, 'is_private')} onChange={e => setUserEdit(user.id, 'is_private', e.target.checked)} />
+                              <span>Приватно лице</span>
+                            </label>
+                            <label className="user-field">
+                              <span>Улога</span>
+                              <select value={getUserField(user, 'role')} onChange={e => setUserEdit(user.id, 'role', e.target.value)}>
+                                <option value="user">Корисник</option>
+                                <option value="admin">Админ</option>
+                              </select>
+                            </label>
+                          </div>
+                          <div className="user-card-actions">
+                            {isDirty && <button type="button" className="btn-order-save" onClick={() => saveUser(user.id)}>Зачувај</button>}
+                            {isDirty && <button type="button" className="btn-order-cancel" onClick={() => setUserEdits(prev => { const n = { ...prev }; delete n[user.id]; return n })}>Откажи</button>}
+                            <button type="button" className="btn-order-delete" onClick={() => deleteUser(user.id)}>Избриши</button>
+                          </div>
+                        </div>
+                      )
+                    })
+                  }
+                </div>
+              )}
+            </div>
+          )}
           </div>
           )}
         </section>
@@ -1353,6 +1670,29 @@ function App() {
             )}
           </div>
 
+          {/* Mobile category chips — only visible ≤1024px */}
+          {!isAdmin && (
+            <div className="mobile-cat-chips">
+              <button
+                type="button"
+                className={`mobile-cat-chip${selectedCategory === 'all' ? ' active' : ''}`}
+                onClick={() => setSelectedCategory('all')}
+              >
+                {locale.categoryAll}
+              </button>
+              {categoryTree.map(node => (
+                <button
+                  key={node.key}
+                  type="button"
+                  className={`mobile-cat-chip${selectedCategory === node.key ? ' active' : ''}`}
+                  onClick={() => setSelectedCategory(node.key)}
+                >
+                  {node.name[language] || node.key}
+                </button>
+              ))}
+            </div>
+          )}
+
           {loading ? (
             <div className="loading-grid">
               {Array.from({ length: 8 }).map((_, i) => (
@@ -1386,10 +1726,10 @@ function App() {
                   >
                     {/* Image */}
                     <div className="product-image product-image--clickable" onClick={() => { if (!isAdmin) setSelectedProduct(product) }}>
-                      <img
-                        src={product.image_url || `https://via.placeholder.com/320x240/F7FAFC/A0AEC0?text=${encodeURIComponent(product.sku)}`}
-                        alt={product.name[language]}
-                      />
+                      {product.image_url
+                        ? <img src={product.image_url} alt={product.name[language]} />
+                        : <div className="product-image__no-img"><Package size={32} strokeWidth={1} /></div>
+                      }
                       {!isInStock(product) && (
                         <div className="product-image__out-of-stock">Нема залиха</div>
                       )}
@@ -1474,6 +1814,7 @@ function App() {
                       ) : (
                         <button
                           type="button"
+                          className={flashProductId === product.id ? 'btn-add--flash' : ''}
                           onClick={() => {
                             addToCart(product.id, cardQty)
                             if (isInStock(product)) setCardQuantities(prev => ({ ...prev, [product.id]: 1 }))
@@ -1532,22 +1873,8 @@ function App() {
                 onClick={() => { setAuthTab('register'); setAuthError('') }}>{locale.registerTitle}</button>
             </div>
             <form onSubmit={handleAuthSubmit} className="auth-form">
-              {authTab === 'register' && (
-                <label>{locale.name}
-                  <input type="text" required value={authForm.name} onChange={e => setAuthForm(p => ({ ...p, name: e.target.value }))} />
-                </label>
-              )}
-              <label>{locale.email}
-                <input type="email" required value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
-              </label>
-              <label>{locale.password}
-                <input type="password" required minLength={6} value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} />
-              </label>
-              {authTab === 'register' && (
+              {authTab === 'register' ? (
                 <>
-                  <label>Потврди лозинка
-                    <input type="password" required minLength={6} value={authForm.confirm_password} onChange={e => setAuthForm(p => ({ ...p, confirm_password: e.target.value }))} />
-                  </label>
                   {!authForm.is_private && (
                     <label>Компанија
                       <input type="text" value={authForm.company_name} onChange={e => setAuthForm(p => ({ ...p, company_name: e.target.value }))} />
@@ -1557,6 +1884,30 @@ function App() {
                     <input type="checkbox" checked={authForm.is_private}
                       onChange={e => setAuthForm(p => ({ ...p, is_private: e.target.checked, company_name: '' }))} />
                     Приватно лице
+                  </label>
+                  <label>{locale.name}
+                    <input type="text" required value={authForm.name} onChange={e => setAuthForm(p => ({ ...p, name: e.target.value }))} />
+                  </label>
+                  <label>Телефон
+                    <input type="tel" required value={authForm.phone} onChange={e => setAuthForm(p => ({ ...p, phone: e.target.value }))} placeholder="+389 XX XXX XXX" />
+                  </label>
+                  <label>{locale.email}
+                    <input type="email" required value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
+                  </label>
+                  <label>{locale.password}
+                    <input type="password" required minLength={6} value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} />
+                  </label>
+                  <label>Потврди лозинка
+                    <input type="password" required minLength={6} value={authForm.confirm_password} onChange={e => setAuthForm(p => ({ ...p, confirm_password: e.target.value }))} />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label>{locale.email}
+                    <input type="email" required value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
+                  </label>
+                  <label>{locale.password}
+                    <input type="password" required minLength={6} value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} />
                   </label>
                 </>
               )}
@@ -1594,42 +1945,6 @@ function App() {
                       <span>#{order.id}</span>
                       <span className="order-status">{order.status}</span>
                       <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{new Date(order.created_at).toLocaleDateString()}</span>
-                      <strong style={{ marginLeft: 'auto' }}>{order.total.toFixed(2)} €</strong>
-                    </div>
-                    <ul className="order-items-list">
-                      {order.items.map(item => (
-                        <li key={item.id}>{item.name} × {item.quantity} — {(item.price * item.quantity).toFixed(2)} €</li>
-                      ))}
-                    </ul>
-                    {order.note && <p className="order-note-text">{order.note}</p>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── All orders modal (admin) ── */}
-      {allOrdersOpen && (
-        <div className="product-modal-overlay" onClick={() => setAllOrdersOpen(false)}>
-          <div className="orders-modal orders-modal--wide" onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setAllOrdersOpen(false)}><X size={14} /></button>
-            <h2><ClipboardList size={17} />Сите нарачки</h2>
-            {allOrders.length === 0 ? (
-              <div className="empty-state" style={{ border: 'none', padding: '32px 0' }}>
-                <Package size={36} strokeWidth={1.2} style={{ color: 'var(--steel-300)' }} />
-                <p>Нема нарачки.</p>
-              </div>
-            ) : (
-              <div className="orders-list">
-                {allOrders.map(order => (
-                  <div key={order.id} className="order-card">
-                    <div className="order-card-header">
-                      <span>#{order.id}</span>
-                      <span className="order-status">{order.status}</span>
-                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{new Date(order.created_at).toLocaleDateString()}</span>
-                      <span className="order-user-tag">{order.user_name} · {order.email}</span>
                       <strong style={{ marginLeft: 'auto' }}>{order.total.toFixed(2)} €</strong>
                     </div>
                     <ul className="order-items-list">
@@ -1757,7 +2072,7 @@ function App() {
                 ? selectedProduct.images
                 : [{ id: 0, url: selectedProduct.image_url || null }]
               const hasMany = imgs.length > 1
-              const src = imgs[carouselIdx]?.url || `https://via.placeholder.com/600x480/F7FAFC/A0AEC0?text=${encodeURIComponent(selectedProduct.sku)}`
+              const src = imgs[carouselIdx]?.url ?? null
               return (
                 <div className="modal-image modal-carousel">
                   {hasMany && (
@@ -1766,7 +2081,10 @@ function App() {
                       <ChevronLeft size={18} />
                     </button>
                   )}
-                  <img src={src} alt={selectedProduct.name[language]} />
+                  {src
+                    ? <img src={src} alt={selectedProduct.name[language]} />
+                    : <div className="product-image__no-img"><Package size={48} strokeWidth={1} /></div>
+                  }
                   {hasMany && (
                     <button className="carousel-btn carousel-btn--next"
                       onClick={e => { e.stopPropagation(); setCarouselIdx(i => (i + 1) % imgs.length) }}>
@@ -2162,6 +2480,86 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* ── Categories drawer (mobile) ── */}
+      {categoriesOpen && (
+        <div className="cat-drawer-overlay" onClick={() => setCategoriesOpen(false)}>
+          <div className="cat-drawer" onClick={e => e.stopPropagation()}>
+            <div className="cat-drawer__header">
+              <span>Категории</span>
+              <button type="button" className="cat-drawer__close" onClick={() => setCategoriesOpen(false)}><X size={16} /></button>
+            </div>
+            <nav className="cat-drawer__nav sidebar-list" onClick={() => setCategoriesOpen(false)}>
+              <div className="sidebar-tree-node depth-0">
+                <button
+                  type="button"
+                  className={selectedCategory === 'all' ? 'active' : ''}
+                  onClick={() => setSelectedCategory('all')}
+                >
+                  <Tag size={13} />{locale.categoryAll}
+                </button>
+              </div>
+              {renderSidebarTree(categoryTree)}
+            </nav>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bottom navigation (mobile ≤1024px) ── */}
+      <nav className="bottom-nav" aria-label="Мобилна навигација" style={{ display: 'flex', position: 'fixed', bottom: 0, left: 0, right: 0, height: '58px', background: '#0B1C36', zIndex: 9999, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+        <button
+          type="button"
+          className={`bottom-nav__tab${!categoriesOpen && !cartOpen && !authModal && !adminOpen ? ' active' : ''}`}
+          onClick={() => { setSelectedCategory('all'); setCategoriesOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+        >
+          <LayoutGrid size={22} />
+          <span>Каталог</span>
+        </button>
+        <button
+          type="button"
+          className={`bottom-nav__tab${categoriesOpen ? ' active' : ''}`}
+          onClick={() => { setCategoriesOpen(v => !v); setCartOpen(false) }}
+        >
+          <AlignJustify size={22} />
+          <span>Категории</span>
+        </button>
+        {isAdmin ? (
+          <button
+            type="button"
+            className={`bottom-nav__tab${adminOpen ? ' active' : ''}`}
+            onClick={() => { setAdminOpen(v => !v); setCategoriesOpen(false) }}
+          >
+            <Settings size={22} />
+            <span>Admin</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={`bottom-nav__tab${cartOpen ? ' active' : ''}`}
+            onClick={() => { setCartOpen(true); setCategoriesOpen(false) }}
+          >
+            <span className="bottom-nav__icon-wrap">
+              <ShoppingCart size={22} />
+              {totalCartQty > 0 && <span className="bottom-nav__badge">{totalCartQty}</span>}
+            </span>
+            <span>Кошничка</span>
+          </button>
+        )}
+        <button
+          type="button"
+          className={`bottom-nav__tab${!!authModal ? ' active' : ''}`}
+          onClick={() => {
+            setCategoriesOpen(false)
+            if (authUser) {
+              if (isAdmin) logout()
+              else { setMyOrdersOpen(true); loadMyOrders() }
+            } else openAuthModal('login')
+          }}
+        >
+          <User size={22} />
+          <span>{authUser ? (isAdmin ? 'Одјави се' : 'Профил') : 'Пријави се'}</span>
+        </button>
+      </nav>
 
       {/* ── Stock history modal ── */}
       {stockHistory && (

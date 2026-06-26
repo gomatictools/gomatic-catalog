@@ -148,6 +148,8 @@ await runAsync(`
 try { await runAsync("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'") } catch { /* exists */ }
 try { await runAsync("ALTER TABLE users ADD COLUMN company_name TEXT DEFAULT ''") } catch { /* exists */ }
 try { await runAsync("ALTER TABLE users ADD COLUMN is_private INTEGER DEFAULT 0") } catch { /* exists */ }
+try { await runAsync("ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''") } catch { /* exists */ }
+try { await runAsync("ALTER TABLE orders ADD COLUMN payment_status TEXT DEFAULT 'unpaid'") } catch { /* exists */ }
 
 // Make zoranveli@gmail.com admin; fallback: first user if no admin exists
 await runAsync("UPDATE users SET role='admin' WHERE email='zoranveli@gmail.com'")
@@ -659,8 +661,8 @@ app.get('/api/stock/:product_id', requireAdmin, async (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, name, password, company_name, is_private } = req.body
-    if (!email || !name || !password) return res.status(400).json({ error: 'Сите полиња се задолжителни.' })
+    const { email, name, password, company_name, is_private, phone } = req.body
+    if (!email || !name || !password || !phone) return res.status(400).json({ error: 'Сите полиња се задолжителни.' })
     if (password.length < 6) return res.status(400).json({ error: 'Лозинката мора да има барем 6 знаци.' })
     const existing = await getAsync('SELECT id FROM users WHERE email = ?', [email.toLowerCase()])
     if (existing) return res.status(409).json({ error: 'Е-пошта е веќе регистрирана.' })
@@ -668,10 +670,10 @@ app.post('/api/auth/register', async (req, res) => {
     const isPriv = is_private ? 1 : 0
     const compName = isPriv ? '' : (company_name || '').trim()
     const result = await runAsync(
-      'INSERT INTO users (email, name, password_hash, role, company_name, is_private) VALUES (?, ?, ?, ?, ?, ?)',
-      [email.toLowerCase(), name.trim(), hash, 'user', compName, isPriv]
+      'INSERT INTO users (email, name, password_hash, role, company_name, is_private, phone) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [email.toLowerCase(), name.trim(), hash, 'user', compName, isPriv, (phone || '').trim()]
     )
-    const user = { id: result.lastID, email: email.toLowerCase(), name: name.trim(), role: 'user', company_name: compName, is_private: isPriv }
+    const user = { id: result.lastID, email: email.toLowerCase(), name: name.trim(), role: 'user', company_name: compName, is_private: isPriv, phone: (phone || '').trim() }
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '30d' })
     res.status(201).json({ token, user })
   } catch (err) {
@@ -758,7 +760,7 @@ app.get('/api/orders/my', requireAuth, async (req, res) => {
 app.get('/api/orders', requireAdmin, async (req, res) => {
   try {
     const rows = await allAsync(`
-      SELECT o.*, u.email, u.name as user_name
+      SELECT o.*, u.name as user_name, u.company_name
       FROM orders o JOIN users u ON o.user_id = u.id
       ORDER BY o.id DESC
     `)
@@ -767,6 +769,89 @@ app.get('/api/orders', requireAdmin, async (req, res) => {
       return { ...o, items }
     }))
     res.json(orders)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.put('/api/orders/:id', requireAdmin, async (req, res) => {
+  try {
+    const { status, payment_status } = req.body
+    const allowed = ['pending', 'ready', 'delivered']
+    const allowedPay = ['unpaid', 'paid']
+    if (status && !allowed.includes(status)) return res.status(400).json({ error: 'Невалиден статус.' })
+    if (payment_status && !allowedPay.includes(payment_status)) return res.status(400).json({ error: 'Невалиден статус на наплата.' })
+    await runAsync(
+      'UPDATE orders SET status = COALESCE(?, status), payment_status = COALESCE(?, payment_status) WHERE id = ?',
+      [status || null, payment_status || null, req.params.id]
+    )
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.delete('/api/orders/:id', requireAdmin, async (req, res) => {
+  try {
+    await runAsync('DELETE FROM orders WHERE id = ?', [req.params.id])
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const rows = await allAsync(
+      'SELECT id, email, name, company_name, is_private, phone, role, created_at FROM users ORDER BY id DESC'
+    )
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.put('/api/admin/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const { name, email, company_name, is_private, phone, role } = req.body
+    const allowedRoles = ['user', 'admin']
+    if (role && !allowedRoles.includes(role)) return res.status(400).json({ error: 'Невалидна улога.' })
+    if (email) {
+      const conflict = await getAsync('SELECT id FROM users WHERE email = ? AND id != ?', [email.toLowerCase(), req.params.id])
+      if (conflict) return res.status(409).json({ error: 'Е-пошта е веќе зафатена.' })
+    }
+    await runAsync(
+      `UPDATE users SET
+        name = COALESCE(?, name),
+        email = COALESCE(?, email),
+        company_name = COALESCE(?, company_name),
+        is_private = COALESCE(?, is_private),
+        phone = COALESCE(?, phone),
+        role = COALESCE(?, role)
+       WHERE id = ?`,
+      [
+        name ?? null,
+        email ? email.toLowerCase() : null,
+        company_name ?? null,
+        is_private !== undefined ? (is_private ? 1 : 0) : null,
+        phone ?? null,
+        role ?? null,
+        req.params.id
+      ]
+    )
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const self = await getAsync('SELECT id FROM users WHERE id = ?', [req.params.id])
+    if (!self) return res.status(404).json({ error: 'Корисникот не постои.' })
+    await runAsync('DELETE FROM orders WHERE user_id = ?', [req.params.id])
+    await runAsync('DELETE FROM users WHERE id = ?', [req.params.id])
+    res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
