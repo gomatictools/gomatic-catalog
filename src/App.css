@@ -2517,7 +2517,7 @@ input, textarea, select { font-family: inherit; }
 
 .img-slot--draggable { cursor: grab; }
 .img-slot--draggable:active { cursor: grabbing; }
-.img-slot--draggable:dragover { outline: 2px solid var(--accent); }
+.img-slot--drag-over { outline: 2px solid var(--accent); }
 
 .img-slot__primary-btn {
   position: absolute;
