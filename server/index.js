@@ -886,7 +886,14 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
   }
 })
 
+// Serve React frontend in production
+const distPath = path.join(__dirname, '../dist')
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath))
+  app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')))
+}
+
 const port = process.env.PORT || 3000
 app.listen(port, () => {
-  console.log(`SQLite Express backend listening on http://localhost:${port}`)
+  console.log(`Server listening on port ${port}`)
 })
