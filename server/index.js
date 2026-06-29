@@ -11,8 +11,25 @@ const JWT_SECRET = process.env.JWT_SECRET || 'gomatic-secret-2024'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const uploadDir = path.join(__dirname, 'uploads')
-const dbFile = path.join(__dirname, 'catalog.db')
+
+// Railway Volume support: if VOLUME_PATH env var is set, use it for persistent storage
+const volumePath = process.env.VOLUME_PATH
+const bundledDb = path.join(__dirname, 'catalog.db')
+let dbFile, uploadDir
+
+if (volumePath) {
+  fs.mkdirSync(volumePath, { recursive: true })
+  dbFile = path.join(volumePath, 'catalog.db')
+  uploadDir = path.join(volumePath, 'uploads')
+  // Seed from bundled DB on first deploy if volume is empty
+  if (!fs.existsSync(dbFile) && fs.existsSync(bundledDb)) {
+    fs.copyFileSync(bundledDb, dbFile)
+  }
+} else {
+  dbFile = bundledDb
+  uploadDir = path.join(__dirname, 'uploads')
+}
+
 fs.mkdirSync(uploadDir, { recursive: true })
 
 const sqlite = sqlite3.verbose()
