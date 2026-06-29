@@ -117,6 +117,8 @@ try {
   await runAsync('ALTER TABLE products ADD COLUMN critical_stock INTEGER DEFAULT 0')
 } catch { /* column already exists */ }
 
+try { await runAsync('ALTER TABLE images ADD COLUMN sort_order INTEGER DEFAULT 0') } catch { /* exists */ }
+
 await runAsync(`
   CREATE TABLE IF NOT EXISTS stock_movements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,7 +239,7 @@ const getAllDescendantKeys = async (key) => {
 
 const buildProduct = async (productRow) => {
   const translations = await allAsync('SELECT lang, name, description FROM product_translations WHERE product_id = ?', [productRow.id])
-  const allImages = await allAsync('SELECT id, url FROM images WHERE product_id = ? ORDER BY is_primary DESC, id DESC LIMIT 3', [productRow.id])
+  const allImages = await allAsync('SELECT id, url, is_primary FROM images WHERE product_id = ? ORDER BY sort_order ASC, is_primary DESC, id ASC LIMIT 3', [productRow.id])
   const inventory = await getAsync('SELECT quantity FROM inventory WHERE product_id = ?', [productRow.id])
 
   const result = {
@@ -591,6 +593,33 @@ app.post('/api/products/:id/images', requireAdmin, async (req, res) => {
     }
     const newImg = await getAsync('SELECT id, url FROM images WHERE product_id = ? AND url = ?', [id, url])
     res.status(201).json(newImg)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.put('/api/products/:id/images/reorder', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    const { order } = req.body // array of image IDs in new order
+    if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be an array of image IDs' })
+    for (let i = 0; i < order.length; i++) {
+      await runAsync('UPDATE images SET sort_order = ? WHERE id = ? AND product_id = ?', [i, order[i], id])
+    }
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.put('/api/products/:id/images/:imageId/primary', requireAdmin, async (req, res) => {
+  try {
+    const { id, imageId } = req.params
+    const img = await getAsync('SELECT id FROM images WHERE id = ? AND product_id = ?', [imageId, id])
+    if (!img) return res.status(404).json({ error: 'Сликата не е пронајдена.' })
+    await runAsync('UPDATE images SET is_primary = 0 WHERE product_id = ?', [id])
+    await runAsync('UPDATE images SET is_primary = 1 WHERE id = ?', [imageId])
+    res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

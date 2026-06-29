@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search, ShoppingCart, X, Package, CheckCircle2, XCircle,
-  Settings, ClipboardList, ChevronLeft, ChevronRight, Truck, LogOut, User,
+  Settings, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Truck, LogOut, User,
   Plus, Minus, Tag, AlertTriangle, ArrowDownCircle, ArrowUpCircle, History,
   LayoutGrid, AlignJustify
 } from 'lucide-react'
@@ -62,8 +62,10 @@ function App() {
   const [editProduct, setEditProduct] = useState(null)
   const [editModalOpen, setEditModalOpen] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
+  const [expandedRoot, setExpandedRoot] = useState(null)
   const dragStateRef = useRef({ key: null, position: null })
   const dragProductRef = useRef({ id: null, position: 'after' })
+  const imgDragRef = useRef(null)
   const [dropTarget, setDropTarget] = useState({ key: null, position: null })
   const [dropProductTarget, setDropProductTarget] = useState({ id: null, position: null })
 
@@ -604,6 +606,44 @@ function App() {
     }
   }
 
+  const setPrimaryEditImage = async (imageId) => {
+    try {
+      await fetch(`${API_BASE}/api/products/${editingProductId}/images/${imageId}/primary`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${authToken}` },
+      })
+      setEditProduct(prev => ({
+        ...prev,
+        images: prev.images.map(img => ({ ...img, is_primary: img.id === imageId ? 1 : 0 })),
+      }))
+    } catch {
+      setError('Не може да се постави главна слика.')
+    }
+  }
+
+  const handleImgDragStart = (e, idx) => {
+    imgDragRef.current = idx
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleImgDrop = async (e, toIdx) => {
+    e.preventDefault()
+    const fromIdx = imgDragRef.current
+    imgDragRef.current = null
+    if (fromIdx === null || fromIdx === toIdx) return
+    const images = [...(editProduct.images || [])]
+    const [moved] = images.splice(fromIdx, 1)
+    images.splice(toIdx, 0, moved)
+    setEditProduct(prev => ({ ...prev, images }))
+    try {
+      await fetch(`${API_BASE}/api/products/${editingProductId}/images/reorder`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ order: images.map(img => img.id) }),
+      })
+    } catch { /* non-critical */ }
+  }
+
   const deleteProduct = async (id) => {
     try {
       const res = await fetch(`${API_BASE}/api/products/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
@@ -921,20 +961,34 @@ function App() {
 
   // ── Render helpers ────────────────────────────────────────────────────────────
   const renderSidebarTree = (nodes, depth = 0) =>
-    nodes.map(node => (
-      <div key={node.key} className={`sidebar-tree-node depth-${depth}`}>
-        <button
-          type="button"
-          className={selectedCategory === node.key ? 'active' : ''}
-          onClick={() => setSelectedCategory(node.key)}
-        >
-          {node.name[language] || node.key}
-        </button>
-        {node.children?.length > 0 && (
-          <div className="sidebar-tree-children">{renderSidebarTree(node.children, depth + 1)}</div>
-        )}
-      </div>
-    ))
+    nodes.map(node => {
+      const hasChildren = node.children?.length > 0
+      const isRoot = depth === 0
+      const isExpanded = isRoot ? expandedRoot === node.key : true
+      return (
+        <div key={node.key} className={`sidebar-tree-node depth-${depth}`}>
+          <button
+            type="button"
+            className={selectedCategory === node.key ? 'active' : ''}
+            onClick={() => {
+              setSelectedCategory(node.key)
+              if (isRoot && hasChildren)
+                setExpandedRoot(prev => prev === node.key ? null : node.key)
+            }}
+          >
+            {isRoot && hasChildren && (
+              <span className="sidebar-chevron">
+                {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </span>
+            )}
+            {node.name[language] || node.key}
+          </button>
+          {hasChildren && isExpanded && (
+            <div className="sidebar-tree-children">{renderSidebarTree(node.children, depth + 1)}</div>
+          )}
+        </div>
+      )
+    })
 
   const renderCategoryAdminTree = (nodes, depth = 0) =>
     nodes.map(node => (
@@ -1155,9 +1209,22 @@ function App() {
                         <label>Слики (до 3)</label>
                         <div className="img-gallery-slots">
                           {(editProduct.images || []).map((img, i) => (
-                            <div key={img.id} className="img-slot img-slot--filled">
+                            <div
+                              key={img.id}
+                              className="img-slot img-slot--filled img-slot--draggable"
+                              draggable
+                              onDragStart={e => handleImgDragStart(e, i)}
+                              onDragOver={e => e.preventDefault()}
+                              onDrop={e => handleImgDrop(e, i)}
+                            >
                               <img src={img.url} alt={`Слика ${i + 1}`} />
-                              {i === 0 && <span className="img-slot__badge">Главна</span>}
+                              {img.is_primary ? <span className="img-slot__badge">Главна</span> : null}
+                              <button
+                                type="button"
+                                className={`img-slot__primary-btn${img.is_primary ? ' active' : ''}`}
+                                title="Постави за главна"
+                                onClick={() => setPrimaryEditImage(img.id)}
+                              >★</button>
                               <button type="button" className="img-slot__remove" onClick={() => deleteEditImage(img.id)}>
                                 <X size={11} />
                               </button>
@@ -1861,8 +1928,8 @@ function App() {
 
       {/* ── Auth modal ── */}
       {authModal && (
-        <div className="product-modal-overlay" onClick={() => setAuthModal(null)}>
-          <div className="auth-modal" onClick={e => e.stopPropagation()}>
+        <div className="product-modal-overlay" onMouseDown={() => setAuthModal(null)}>
+          <div className="auth-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setAuthModal(null)}>
               <X size={14} />
             </button>
@@ -1928,8 +1995,8 @@ function App() {
 
       {/* ── My orders modal ── */}
       {myOrdersOpen && (
-        <div className="product-modal-overlay" onClick={() => setMyOrdersOpen(false)}>
-          <div className="orders-modal" onClick={e => e.stopPropagation()}>
+        <div className="product-modal-overlay" onMouseDown={() => setMyOrdersOpen(false)}>
+          <div className="orders-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setMyOrdersOpen(false)}><X size={14} /></button>
             <h2><ClipboardList size={17} />{locale.ordersTitle}</h2>
             {myOrders.length === 0 ? (
@@ -1963,8 +2030,8 @@ function App() {
 
       {/* ── Cart modal ── */}
       {cartOpen && (
-        <div className="product-modal-overlay" onClick={() => setCartOpen(false)}>
-          <div className="cart-modal" onClick={e => e.stopPropagation()}>
+        <div className="product-modal-overlay" onMouseDown={() => setCartOpen(false)}>
+          <div className="cart-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setCartOpen(false)}><X size={14} /></button>
             <h2><ShoppingCart size={17} />{locale.cartTitle}</h2>
 
@@ -2062,8 +2129,8 @@ function App() {
 
       {/* ── Product detail modal ── */}
       {selectedProduct && (
-        <div className="product-modal-overlay" onClick={() => setSelectedProduct(null)}>
-          <div className="product-modal" onClick={e => e.stopPropagation()}>
+        <div className="product-modal-overlay" onMouseDown={() => setSelectedProduct(null)}>
+          <div className="product-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setSelectedProduct(null)}><X size={14} /></button>
 
             {/* Image carousel */}
@@ -2192,8 +2259,8 @@ function App() {
 
       {/* ── Edit product modal (admin) ── */}
       {editModalOpen && editProduct && (
-        <div className="product-modal-overlay" onClick={() => { setEditModalOpen(false); setEditingProductId(null); setEditProduct(null) }}>
-          <div className="edit-modal" onClick={e => e.stopPropagation()}>
+        <div className="product-modal-overlay" onMouseDown={() => { setEditModalOpen(false); setEditingProductId(null); setEditProduct(null) }}>
+          <div className="edit-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => { setEditModalOpen(false); setEditingProductId(null); setEditProduct(null) }}>
               <X size={14} />
             </button>
@@ -2213,9 +2280,22 @@ function App() {
                   <label>Слики (до 3)</label>
                   <div className="img-gallery-slots">
                     {(editProduct.images || []).map((img, i) => (
-                      <div key={img.id} className="img-slot img-slot--filled">
+                      <div
+                        key={img.id}
+                        className="img-slot img-slot--filled img-slot--draggable"
+                        draggable
+                        onDragStart={e => handleImgDragStart(e, i)}
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={e => handleImgDrop(e, i)}
+                      >
                         <img src={img.url} alt={`Слика ${i + 1}`} />
-                        {i === 0 && <span className="img-slot__badge">Главна</span>}
+                        {img.is_primary ? <span className="img-slot__badge">Главна</span> : null}
+                        <button
+                          type="button"
+                          className={`img-slot__primary-btn${img.is_primary ? ' active' : ''}`}
+                          title="Постави за главна"
+                          onClick={() => setPrimaryEditImage(img.id)}
+                        >★</button>
                         <button type="button" className="img-slot__remove" onClick={() => deleteEditImage(img.id)}>
                           <X size={11} />
                         </button>
@@ -2400,8 +2480,8 @@ function App() {
 
       {/* ── Stock movement modal (Влез / Излез) ── */}
       {stockModal && (
-        <div className="product-modal-overlay" onClick={() => setStockModal(null)}>
-          <div className="stock-modal" onClick={e => e.stopPropagation()}>
+        <div className="product-modal-overlay" onMouseDown={() => setStockModal(null)}>
+          <div className="stock-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setStockModal(null)}><X size={14} /></button>
 
             <div className={`stock-modal__header stock-modal__header--${stockModal.type}`}>
@@ -2563,8 +2643,8 @@ function App() {
 
       {/* ── Stock history modal ── */}
       {stockHistory && (
-        <div className="product-modal-overlay" onClick={() => setStockHistory(null)}>
-          <div className="stock-history-modal" onClick={e => e.stopPropagation()}>
+        <div className="product-modal-overlay" onMouseDown={() => setStockHistory(null)}>
+          <div className="stock-history-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setStockHistory(null)}><X size={14} /></button>
             <div className="stock-history-modal__header">
               <History size={17} />
