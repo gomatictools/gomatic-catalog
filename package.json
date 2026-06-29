@@ -16,6 +16,7 @@
     "cors": "^2.8.6",
     "express": "^4.22.2",
     "jsonwebtoken": "^9.0.3",
+    "lucide-react": "^0.484.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "sqlite3": "^5.1.7"
