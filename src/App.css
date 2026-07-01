@@ -50,9 +50,6 @@ input, textarea, select { font-family: inherit; }
   height: 44px;
   width: auto;
   display: block;
-  background: #fff;
-  border-radius: var(--r-md);
-  padding: 4px 8px;
   object-fit: contain;
 }
 
@@ -111,15 +108,16 @@ input, textarea, select { font-family: inherit; }
   padding: 0 4px;
 }
 
-/* Lang flags */
-.lang-flags {
-  display: flex;
-  gap: 2px;
-  align-items: center;
+/* Lang switch (dropdown) */
+.lang-switch {
+  position: relative;
   margin-right: 4px;
 }
 
-.flag-btn {
+.lang-switch__current {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   background: none;
   border: 2px solid transparent;
   border-radius: var(--r-sm);
@@ -133,8 +131,40 @@ input, textarea, select { font-family: inherit; }
   transition: border-color 0.15s, transform 0.1s, color 0.15s;
 }
 
-.flag-btn:hover { color: #fff; transform: scale(1.08); }
-.flag-btn.active { border-color: var(--orange-500); color: #fff; }
+.lang-switch__current:hover,
+.lang-switch__current.open { color: #fff; border-color: var(--orange-500); }
+
+.lang-switch__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--navy-900);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--r-md);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 110;
+  min-width: 44px;
+}
+
+.lang-switch__option {
+  background: none;
+  border: 2px solid transparent;
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.lang-switch__option:hover { color: #fff; border-color: var(--orange-500); }
 
 /* Header buttons */
 .btn-auth-outline {
@@ -876,6 +906,7 @@ input, textarea, select { font-family: inherit; }
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
 }
 
 .catalog-controls {
@@ -2907,6 +2938,7 @@ input, textarea, select { font-family: inherit; }
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
     flex-shrink: 0;
+    min-width: 0;
   }
 
   .mobile-cat-chips::-webkit-scrollbar { display: none; }

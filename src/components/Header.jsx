@@ -1,5 +1,13 @@
-import { ClipboardList, LogOut, Search, Settings, ShoppingCart } from 'lucide-react'
-import logoSrc from '../assets/logo.png'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ClipboardList, LogOut, Search, Settings, ShoppingCart } from 'lucide-react'
+import logoSrc from '../assets/logo.svg'
+
+const LANGS = [
+  { code: 'mk', flag: '🇲🇰', title: 'Македонски' },
+  { code: 'sr', flag: '🇷🇸', title: 'Српски' },
+  { code: 'sq', flag: '🇦🇱', title: 'Shqip' },
+  { code: 'en', flag: '🇬🇧', title: 'English' },
+]
 
 export function Header({
   language, setLanguage,
@@ -13,6 +21,19 @@ export function Header({
   onOpenCart,
   onToggleAdmin,
 }) {
+  const [langOpen, setLangOpen] = useState(false)
+  const langRef = useRef(null)
+  const currentLang = LANGS.find(l => l.code === language) || LANGS[0]
+
+  useEffect(() => {
+    if (!langOpen) return
+    const onClickOutside = (e) => {
+      if (langRef.current && !langRef.current.contains(e.target)) setLangOpen(false)
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [langOpen])
+
   return (
     <header className="catalog-header">
       <div className="catalog-header__inner">
@@ -35,18 +56,24 @@ export function Header({
 
         {/* Actions */}
         <div className="header-actions">
-          <div className="lang-flags">
-            {[
-              { code: 'mk', flag: '🇲🇰', title: 'Македонски' },
-              { code: 'sr', flag: '🇷🇸', title: 'Српски' },
-              { code: 'sq', flag: '🇦🇱', title: 'Shqip' },
-              { code: 'en', flag: '🇬🇧', title: 'English' },
-            ].map(l => (
-              <button key={l.code} type="button" title={l.title}
-                className={`flag-btn${language === l.code ? ' active' : ''}`}
-                onClick={() => setLanguage(l.code)}
-              >{l.flag}</button>
-            ))}
+          <div className="lang-switch" ref={langRef}>
+            <button type="button" title={currentLang.title}
+              className={`lang-switch__current${langOpen ? ' open' : ''}`}
+              onClick={() => setLangOpen(o => !o)}
+            >
+              {currentLang.flag}
+              <ChevronDown size={12} />
+            </button>
+            {langOpen && (
+              <div className="lang-switch__menu">
+                {LANGS.filter(l => l.code !== language).map(l => (
+                  <button key={l.code} type="button" title={l.title}
+                    className="lang-switch__option"
+                    onClick={() => { setLanguage(l.code); setLangOpen(false) }}
+                  >{l.flag}</button>
+                ))}
+              </div>
+            )}
           </div>
 
           {authUser ? (
